@@ -1,0 +1,5 @@
+index/*.index
+index/*.dict
+tmp/*
+__pycache__/
+*.pyc

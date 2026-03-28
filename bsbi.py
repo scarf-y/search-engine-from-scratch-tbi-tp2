@@ -203,7 +203,9 @@ class BSBIIndex:
         if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
             self.load()
 
-        terms = [self.term_id_map[word] for word in query.split()]
+        terms = [self.term_id_map.str_to_id[word]
+                 for word in query.split()
+                 if word in self.term_id_map.str_to_id]
         with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
 
             scores = {}
@@ -220,6 +222,54 @@ class BSBIIndex:
                             scores[doc_id] += math.log(N / df) * (1 + math.log(tf))
 
             # Top-K
+            docs = [(score, self.doc_id_map[doc_id]) for (doc_id, score) in scores.items()]
+            return sorted(docs, key = lambda x: x[0], reverse = True)[:k]
+
+    def retrieve_bm25(self, query, k = 10, k1 = 1.2, b = 0.75):
+        """
+        Melakukan Ranked Retrieval dengan skema TaaT menggunakan BM25.
+
+        Formula:
+            score(D, Q) = sum_{t in Q n D} log(N/df_t) *
+                          ((k1 + 1) * tf_tD) /
+                          (k1 * ((1 - b) + b * (dl / avdl)) + tf_tD)
+        """
+        if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
+            self.load()
+
+        terms = [self.term_id_map.str_to_id[word]
+                 for word in query.split()
+                 if word in self.term_id_map.str_to_id]
+        with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
+            scores = {}
+            N = len(merged_index.doc_length)
+            if N == 0:
+                return []
+            avdl = merged_index.avg_doc_length if merged_index.avg_doc_length > 0 else 1.0
+
+            for term in terms:
+                if term not in merged_index.postings_dict:
+                    continue
+
+                df = merged_index.postings_dict[term][1]
+                if df == 0:
+                    continue
+                idf = math.log(N / df)
+                postings, tf_list = merged_index.get_postings_list(term)
+
+                for i in range(len(postings)):
+                    doc_id, tf = postings[i], tf_list[i]
+                    if tf <= 0:
+                        continue
+                    dl = merged_index.doc_length.get(doc_id, 0)
+                    denom = k1 * ((1 - b) + b * (dl / avdl)) + tf
+                    if denom == 0:
+                        continue
+                    score = idf * (((k1 + 1) * tf) / denom)
+                    if doc_id not in scores:
+                        scores[doc_id] = 0.0
+                    scores[doc_id] += score
+
             docs = [(score, self.doc_id_map[doc_id]) for (doc_id, score) in scores.items()]
             return sorted(docs, key = lambda x: x[0], reverse = True)[:k]
 
