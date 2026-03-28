@@ -1,4 +1,6 @@
 import array
+import math
+import struct
 
 class StandardPostings:
     """ 
@@ -237,11 +239,159 @@ class VBEPostings:
         """
         return VBEPostings.vb_decode(encoded_tf_list)
 
+
+class RicePostings:
+    """
+    Rice coding (Golomb coding with M = 2^k) untuk kompresi integer list.
+
+    Untuk menjaga agar decode selalu deterministik:
+    - setiap bytestream menyimpan header berisi k dan banyak angka (n),
+    - payload adalah bitstream Rice yang dipad dengan 0 ke kelipatan 8 bit.
+
+    Header format:
+    - 1 byte  : k
+    - 4 bytes : n (jumlah integer yang di-encode)
+    """
+
+    HEADER_FORMAT = ">BI"
+    HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+    MAX_K = 31
+
+    @staticmethod
+    def _choose_k(numbers):
+        """Memilih parameter k sederhana berdasarkan rata-rata nilai."""
+        if not numbers:
+            return 0
+        avg = sum(numbers) / len(numbers)
+        if avg <= 1:
+            return 0
+        return min(max(int(math.log2(avg)), 0), RicePostings.MAX_K)
+
+    @staticmethod
+    def _rice_encode_numbers(numbers, k):
+        """
+        Encode list bilangan non-negatif menjadi payload Rice bit-level.
+        """
+        mask = (1 << k) - 1 if k > 0 else 0
+        bits = []
+
+        for number in numbers:
+            if number < 0:
+                raise ValueError("Rice coding hanya mendukung integer non-negatif")
+
+            quotient = number >> k if k > 0 else number
+            bits.append("1" * quotient)
+            bits.append("0")
+            if k > 0:
+                remainder = number & mask
+                bits.append(f"{remainder:0{k}b}")
+
+        bitstream = "".join(bits)
+        padding = (8 - (len(bitstream) % 8)) % 8
+        if padding:
+            bitstream += "0" * padding
+
+        if not bitstream:
+            return b""
+
+        return bytes(int(bitstream[i:i + 8], 2) for i in range(0, len(bitstream), 8))
+
+    @staticmethod
+    def _rice_decode_numbers(payload, k, count):
+        """
+        Decode payload Rice bit-level menjadi list integer non-negatif.
+        """
+        if count == 0:
+            return []
+
+        bitstream = "".join(f"{byte:08b}" for byte in payload)
+        numbers = []
+        idx = 0
+
+        for _ in range(count):
+            quotient = 0
+            while idx < len(bitstream) and bitstream[idx] == "1":
+                quotient += 1
+                idx += 1
+
+            if idx >= len(bitstream):
+                raise ValueError("Bitstream Rice tidak valid: terminator unary tidak ditemukan")
+            idx += 1  # consume unary terminator '0'
+
+            if k > 0:
+                if idx + k > len(bitstream):
+                    raise ValueError("Bitstream Rice tidak valid: sisa bit remainder kurang")
+                remainder = int(bitstream[idx:idx + k], 2)
+                idx += k
+            else:
+                remainder = 0
+
+            numbers.append((quotient << k) + remainder)
+
+        return numbers
+
+    @staticmethod
+    def _encode_number_list(numbers):
+        k = RicePostings._choose_k(numbers)
+        payload = RicePostings._rice_encode_numbers(numbers, k)
+        header = struct.pack(RicePostings.HEADER_FORMAT, k, len(numbers))
+        return header + payload
+
+    @staticmethod
+    def _decode_number_list(encoded_bytes):
+        if len(encoded_bytes) < RicePostings.HEADER_SIZE:
+            raise ValueError("Encoded bytes terlalu pendek untuk header Rice")
+
+        k, count = struct.unpack(
+            RicePostings.HEADER_FORMAT, encoded_bytes[:RicePostings.HEADER_SIZE]
+        )
+        payload = encoded_bytes[RicePostings.HEADER_SIZE:]
+        return RicePostings._rice_decode_numbers(payload, k, count)
+
+    @staticmethod
+    def encode(postings_list):
+        """
+        Encode postings list dengan transformasi gap lalu Rice coding.
+        """
+        if not postings_list:
+            return RicePostings._encode_number_list([])
+
+        gap_postings_list = [postings_list[0]]
+        for i in range(1, len(postings_list)):
+            gap_postings_list.append(postings_list[i] - postings_list[i - 1])
+        return RicePostings._encode_number_list(gap_postings_list)
+
+    @staticmethod
+    def decode(encoded_postings_list):
+        """
+        Decode postings list dari bytestream Rice lalu rekonstruksi dari gap.
+        """
+        gap_postings_list = RicePostings._decode_number_list(encoded_postings_list)
+        if not gap_postings_list:
+            return []
+
+        postings_list = [gap_postings_list[0]]
+        total = gap_postings_list[0]
+        for gap in gap_postings_list[1:]:
+            total += gap
+            postings_list.append(total)
+        return postings_list
+
+    @staticmethod
+    def encode_tf(tf_list):
+        """Encode TF list dengan Rice coding."""
+        return RicePostings._encode_number_list(tf_list)
+
+    @staticmethod
+    def decode_tf(encoded_tf_list):
+        """Decode TF list dari bytestream Rice."""
+        return RicePostings._decode_number_list(encoded_tf_list)
+
 if __name__ == '__main__':
     
     postings_list = [34, 67, 89, 454, 2345738]
     tf_list = [12, 10, 3, 4, 1]
-    for Postings in [StandardPostings, VBEPostings]:
+    for Postings in [StandardPostings, VBEPostings, RicePostings]:
         print(Postings.__name__)
         encoded_postings_list = Postings.encode(postings_list)
         encoded_tf_list = Postings.encode_tf(tf_list)
