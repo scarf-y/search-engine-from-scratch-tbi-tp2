@@ -26,7 +26,7 @@ def build_arg_parser():
     )
     parser.add_argument(
         "--scoring",
-        choices=["tfidf", "bm25", "bm25_wand"],
+        choices=["tfidf", "bm25", "bm25_wand", "adaptive"],
         default="tfidf",
         help="Scoring method"
     )
@@ -68,8 +68,10 @@ def run_search(args):
             results = bsbi.retrieve_tfidf(query, k=args.k)
         elif args.scoring == "bm25":
             results = bsbi.retrieve_bm25(query, k=args.k, k1=args.k1, b=args.b)
-        else:
+        elif args.scoring == "bm25_wand":
             results = bsbi.retrieve_bm25_wand(query, k=args.k, k1=args.k1, b=args.b)
+        else:
+            results = bsbi.retrieve_adaptive(query, k=args.k, k1=args.k1, b=args.b)
 
         for (score, doc) in results:
             print(f"{doc:30} {score:>.3f}")

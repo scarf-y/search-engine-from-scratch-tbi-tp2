@@ -451,6 +451,44 @@ class BSBIIndex:
             ranked = sorted(topk_heap, key=lambda x: x[0], reverse=True)
             return [(score, self.doc_id_map[doc_id]) for (score, doc_id) in ranked]
 
+    def retrieve_adaptive(self, query, k = 10, k1 = 1.2, b = 0.75,
+                          df_ratio_threshold = 0.08, long_query_threshold = 4):
+        """
+        Adaptive retrieval:
+        - Query broad / cenderung high-DF -> BM25 + WAND
+        - Query sempit / low-DF -> BM25 biasa
+        """
+        if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
+            self.load()
+
+        term_ids = self._query_term_ids(query)
+        if not term_ids:
+            return []
+
+        use_wand = False
+        with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
+            N = len(merged_index.doc_length)
+            if N == 0:
+                return []
+
+            dfs = [merged_index.postings_dict[t][1]
+                   for t in term_ids
+                   if t in merged_index.postings_dict]
+            if not dfs:
+                return []
+
+            avg_df_ratio = sum(dfs) / (len(dfs) * N)
+            max_df_ratio = max(dfs) / N
+
+            if len(term_ids) >= long_query_threshold or \
+               avg_df_ratio >= df_ratio_threshold or \
+               max_df_ratio >= 0.20:
+                use_wand = True
+
+        if use_wand:
+            return self.retrieve_bm25_wand(query, k = k, k1 = k1, b = b)
+        return self.retrieve_bm25(query, k = k, k1 = k1, b = b)
+
     def _query_term_ids(self, query):
         """
         Konversi query string -> list term_id menggunakan FST dictionary.

@@ -11,7 +11,7 @@ ENCODINGS = {
   "rice": RicePostings
 }
 
-SCORINGS = ("tfidf", "bm25", "bm25_wand")
+SCORINGS = ("tfidf", "bm25", "bm25_wand", "adaptive")
 
 ######## >>>>> sebuah IR metric: RBP p = 0.8
 
@@ -119,7 +119,9 @@ def _retrieve(bsbi_instance, scoring, query, k, k1, b):
     return bsbi_instance.retrieve_tfidf(query, k = k)
   if scoring == "bm25":
     return bsbi_instance.retrieve_bm25(query, k = k, k1 = k1, b = b)
-  return bsbi_instance.retrieve_bm25_wand(query, k = k, k1 = k1, b = b)
+  if scoring == "bm25_wand":
+    return bsbi_instance.retrieve_bm25_wand(query, k = k, k1 = k1, b = b)
+  return bsbi_instance.retrieve_adaptive(query, k = k, k1 = k1, b = b)
 
 ######## >>>>> EVALUASI !
 
