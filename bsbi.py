@@ -273,6 +273,141 @@ class BSBIIndex:
             docs = [(score, self.doc_id_map[doc_id]) for (doc_id, score) in scores.items()]
             return sorted(docs, key = lambda x: x[0], reverse = True)[:k]
 
+    @staticmethod
+    def _bm25_term_score(tf, df, N, dl, avdl, k1, b):
+        """Kontribusi satu term BM25 untuk satu dokumen."""
+        if tf <= 0 or df <= 0 or N <= 0:
+            return 0.0
+        idf = math.log(N / df)
+        denom = k1 * ((1 - b) + b * (dl / avdl)) + tf
+        if denom == 0:
+            return 0.0
+        return idf * (((k1 + 1) * tf) / denom)
+
+    @staticmethod
+    def _bm25_term_upper_bound(max_tf, df, N, k1, b):
+        """
+        Upper bound longgar untuk kontribusi term BM25 (dipakai WAND).
+        Asumsi kasus terbaik pada normalisasi panjang dokumen (dl -> 0).
+        """
+        if max_tf <= 0 or df <= 0 or N <= 0:
+            return 0.0
+        idf = math.log(N / df)
+        denom = k1 * (1 - b) + max_tf
+        if denom == 0:
+            return 0.0
+        return idf * (((k1 + 1) * max_tf) / denom)
+
+    def retrieve_bm25_wand(self, query, k = 10, k1 = 1.2, b = 0.75):
+        """
+        Melakukan Top-K retrieval BM25 dengan algoritma WAND.
+        Menggunakan upper bound kontribusi per-term agar tidak semua kandidat
+        dokumen dihitung skornya.
+        """
+        if k <= 0:
+            return []
+        if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
+            self.load()
+
+        terms = [self.term_id_map.str_to_id[word]
+                 for word in query.split()
+                 if word in self.term_id_map.str_to_id]
+        if not terms:
+            return []
+
+        with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
+            N = len(merged_index.doc_length)
+            if N == 0:
+                return []
+            avdl = merged_index.avg_doc_length if merged_index.avg_doc_length > 0 else 1.0
+
+            states = []
+            for term in terms:
+                if term not in merged_index.postings_dict:
+                    continue
+
+                postings, tf_list = merged_index.get_postings_list(term)
+                if not postings:
+                    continue
+
+                meta = merged_index.postings_dict[term]
+                df = meta[1]
+                max_tf = meta[4] if len(meta) > 4 else max(tf_list)
+                upper_bound = self._bm25_term_upper_bound(max_tf, df, N, k1, b)
+                if upper_bound <= 0:
+                    continue
+
+                states.append({
+                    "term": term,
+                    "df": df,
+                    "postings": postings,
+                    "tf_list": tf_list,
+                    "ptr": 0,
+                    "ub": upper_bound
+                })
+
+            if not states:
+                return []
+
+            topk_heap = []  # min-heap berisi (score, doc_id)
+            threshold = 0.0
+
+            while True:
+                active_states = [s for s in states if s["ptr"] < len(s["postings"])]
+                if not active_states:
+                    break
+
+                active_states.sort(key=lambda s: s["postings"][s["ptr"]])
+
+                score_limit = 0.0
+                pivot_doc = None
+                for state in active_states:
+                    score_limit += state["ub"]
+                    if score_limit > threshold:
+                        pivot_doc = state["postings"][state["ptr"]]
+                        break
+
+                if pivot_doc is None:
+                    break
+
+                smallest_doc = active_states[0]["postings"][active_states[0]["ptr"]]
+                if smallest_doc == pivot_doc:
+                    candidate_doc = pivot_doc
+                    score = 0.0
+
+                    for state in active_states:
+                        while state["ptr"] < len(state["postings"]) and \
+                              state["postings"][state["ptr"]] < candidate_doc:
+                            state["ptr"] += 1
+
+                        if state["ptr"] < len(state["postings"]) and \
+                           state["postings"][state["ptr"]] == candidate_doc:
+                            tf = state["tf_list"][state["ptr"]]
+                            dl = merged_index.doc_length.get(candidate_doc, 0)
+                            score += self._bm25_term_score(
+                                tf, state["df"], N, dl, avdl, k1, b
+                            )
+
+                    if score > threshold:
+                        heapq.heappush(topk_heap, (score, candidate_doc))
+                        if len(topk_heap) > k:
+                            heapq.heappop(topk_heap)
+                        if len(topk_heap) == k:
+                            threshold = topk_heap[0][0]
+
+                    for state in active_states:
+                        if state["ptr"] < len(state["postings"]) and \
+                           state["postings"][state["ptr"]] == candidate_doc:
+                            state["ptr"] += 1
+                else:
+                    lead_state = active_states[0]
+                    while lead_state["ptr"] < len(lead_state["postings"]) and \
+                          lead_state["postings"][lead_state["ptr"]] < pivot_doc:
+                        lead_state["ptr"] += 1
+
+            ranked = sorted(topk_heap, key=lambda x: x[0], reverse=True)
+            return [(score, self.doc_id_map[doc_id]) for (score, doc_id) in ranked]
+
     def index(self):
         """
         Base indexing code

@@ -14,14 +14,15 @@ class InvertedIndex:
             termID -> (start_position_in_index_file,
                        number_of_postings_in_list,
                        length_in_bytes_of_postings_list,
-                       length_in_bytes_of_tf_list)
+                       length_in_bytes_of_tf_list,
+                       max_tf_in_term_postings)
 
         postings_dict adalah konsep "Dictionary" yang merupakan bagian dari
         Inverted Index. postings_dict ini diasumsikan dapat dimuat semuanya
         di memori.
 
         Seperti namanya, "Dictionary" diimplementasikan sebagai python's Dictionary
-        yang memetakan term ID (integer) ke 4-tuple:
+        yang memetakan term ID (integer) ke 5-tuple:
            1. start_position_in_index_file : (dalam satuan bytes) posisi dimana
               postings yang bersesuaian berada di file (storage). Kita bisa
               menggunakan operasi "seek" untuk mencapainya.
@@ -31,6 +32,7 @@ class InvertedIndex:
               satuan byte.
            4. length_in_bytes_of_tf_list : panjang list of term frequencies dari
               postings list terkait dalam satuan byte
+           5. max_tf_in_term_postings : nilai TF maksimum term pada seluruh dokumen
 
     terms: List[int]
         List of terms IDs, untuk mengingat urutan terms yang dimasukan ke
@@ -148,7 +150,8 @@ class InvertedIndexReader(InvertedIndex):
         diproses di memori. JANGAN MEMUAT SEMUA INDEX DI MEMORI!
         """
         curr_term = next(self.term_iter)
-        pos, number_of_postings, len_in_bytes_of_postings, len_in_bytes_of_tf = self.postings_dict[curr_term]
+        posting_meta = self.postings_dict[curr_term]
+        pos, number_of_postings, len_in_bytes_of_postings, len_in_bytes_of_tf = posting_meta[:4]
         postings_list = self.postings_encoding.decode(self.index_file.read(len_in_bytes_of_postings))
         tf_list = self.postings_encoding.decode_tf(self.index_file.read(len_in_bytes_of_tf))
         return (curr_term, postings_list, tf_list)
@@ -164,7 +167,8 @@ class InvertedIndexReader(InvertedIndex):
         byte tertentu pada file (index file) dimana postings list (dan juga
         list of TF) dari term disimpan.
         """
-        pos, number_of_postings, len_in_bytes_of_postings, len_in_bytes_of_tf = self.postings_dict[term]
+        posting_meta = self.postings_dict[term]
+        pos, number_of_postings, len_in_bytes_of_postings, len_in_bytes_of_tf = posting_meta[:4]
         self.index_file.seek(pos)
         postings_list = self.postings_encoding.decode(self.index_file.read(len_in_bytes_of_postings))
         tf_list = self.postings_encoding.decode_tf(self.index_file.read(len_in_bytes_of_tf))
@@ -190,10 +194,11 @@ class InvertedIndexWriter(InvertedIndex):
         2. Encode tf_list menggunakan self.postings_encoding (method encode_tf),
         3. Menyimpan metadata dalam bentuk self.terms, self.postings_dict, dan self.doc_length.
            Ingat kembali bahwa self.postings_dict memetakan sebuah termID ke
-           sebuah 4-tuple: - start_position_in_index_file
+           sebuah 5-tuple: - start_position_in_index_file
                            - number_of_postings_in_list
                            - length_in_bytes_of_postings_list
                            - length_in_bytes_of_tf_list
+                           - max_tf_in_term_postings
         4. Menambahkan (append) bystream dari postings_list yang sudah di-encode dan
            tf_list yang sudah di-encode ke posisi akhir index file di harddisk.
 
@@ -231,8 +236,9 @@ class InvertedIndexWriter(InvertedIndex):
         compressed_tf_list = self.postings_encoding.encode_tf(tf_list)
         self.index_file.write(compressed_postings)
         self.index_file.write(compressed_tf_list)
+        max_tf = max(tf_list) if tf_list else 0
         self.postings_dict[term] = (curr_position_in_byte, len(postings_list), \
-                                    len(compressed_postings), len(compressed_tf_list))
+                                    len(compressed_postings), len(compressed_tf_list), max_tf)
 
 
 if __name__ == "__main__":
@@ -248,11 +254,13 @@ if __name__ == "__main__":
         assert index.postings_dict == {1: (0, \
                                            5, \
                                            len(VBEPostings.encode([2,3,4,8,10])), \
-                                           len(VBEPostings.encode_tf([2,4,2,3,30]))),
+                                           len(VBEPostings.encode_tf([2,4,2,3,30])), \
+                                           30),
                                        2: (len(VBEPostings.encode([2,3,4,8,10])) + len(VBEPostings.encode_tf([2,4,2,3,30])), \
                                            3, \
                                            len(VBEPostings.encode([3,4,5])), \
-                                           len(VBEPostings.encode_tf([34,23,56])))}, "postings dictionary salah"
+                                           len(VBEPostings.encode_tf([34,23,56])), \
+                                           56)}, "postings dictionary salah"
         
         index.index_file.seek(index.postings_dict[2][0])
         assert VBEPostings.decode(index.index_file.read(len(VBEPostings.encode([3,4,5])))) == [3,4,5], "terdapat kesalahan"
