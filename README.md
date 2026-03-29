@@ -28,11 +28,20 @@ The codebase was extended to complete the main TP2 requirements.
 - Added `retrieve_bm25_wand(...)` in `bsbi.py`.
 - Inverted index metadata now stores extra per-term statistic (`max_tf`) to compute upper bounds for WAND pruning.
 
+## Bonus Feature
+### SPIMI Indexing Mode (Separate Module)
+- Added `spimi.py` as a separate SPIMI indexer.
+- SPIMI accumulates in-memory dictionary:
+  - `term_id -> {doc_id: tf}`
+- The dictionary is flushed to intermediate index files every configurable number of documents, then merged into the final index.
+- Output index format is compatible with existing `search.py` and `evaluation.py`.
+
 ## Project Structure
 - `bsbi.py`: indexing orchestration + retrieval methods (TF-IDF, BM25, BM25-WAND)
 - `index.py`: inverted index reader/writer and metadata storage
 - `compression.py`: postings compression classes (Standard, VBE, Rice)
 - `evaluation.py`: retrieval effectiveness evaluation
+- `spimi.py`: separate SPIMI indexing module (bonus)
 - `search.py`: sample search script
 - `collection/`: document collection
 - `queries.txt`, `qrels.txt`: evaluation inputs
@@ -55,6 +64,11 @@ python bsbi.py
 Build index with specific compression:
 ```bash
 python bsbi.py --encoding rice
+```
+
+Build index using SPIMI (bonus):
+```bash
+python spimi.py --encoding rice --docs-per-chunk 100
 ```
 
 ### 2) Run Search
@@ -92,5 +106,6 @@ print(bsbi.retrieve_bm25_wand("lipid metabolism in pregnancy", k=10))
 
 ## Notes
 - Re-run indexing (`python bsbi.py`) after metadata schema changes to ensure all statistics are persisted.
+- `spimi.py` writes to `index` by default (same as `bsbi.py`), so running one indexer after another will overwrite index files.
 - The retrieval/evaluation `--encoding` must match the encoding used when building index files.
 - For correctness checks, BM25 and BM25-WAND top-k results can be compared on the same queries.
