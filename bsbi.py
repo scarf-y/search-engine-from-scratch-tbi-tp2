@@ -9,6 +9,7 @@ import argparse
 from index import InvertedIndexReader, InvertedIndexWriter
 from util import IdMap, sorted_merge_posts_and_tfs
 from compression import StandardPostings, VBEPostings, RicePostings
+from fst import FSTDictionary
 from tqdm import tqdm
 
 ENCODINGS = {
@@ -37,17 +38,38 @@ class BSBIIndex:
         self.output_dir = output_dir
         self.index_name = index_name
         self.postings_encoding = postings_encoding
+        self.term_fst = None
+        self.term_fst_path = os.path.join(self.output_dir, "terms.fst")
 
         # Untuk menyimpan nama-nama file dari semua intermediate inverted index
         self.intermediate_indices = []
 
+    def _build_term_fst(self):
+        self.term_fst = FSTDictionary.from_id_to_str(self.term_id_map.id_to_str)
+
+    def _save_term_fst(self):
+        if self.term_fst is None:
+            self._build_term_fst()
+        with open(self.term_fst_path, "wb") as f:
+            pickle.dump(self.term_fst, f)
+
+    def _load_term_fst(self):
+        if os.path.exists(self.term_fst_path):
+            with open(self.term_fst_path, "rb") as f:
+                self.term_fst = pickle.load(f)
+        else:
+            # Backward-compatible jika index lama belum punya terms.fst
+            self._build_term_fst()
+
     def save(self):
         """Menyimpan doc_id_map and term_id_map ke output directory via pickle"""
 
+        os.makedirs(self.output_dir, exist_ok=True)
         with open(os.path.join(self.output_dir, 'terms.dict'), 'wb') as f:
             pickle.dump(self.term_id_map, f)
         with open(os.path.join(self.output_dir, 'docs.dict'), 'wb') as f:
             pickle.dump(self.doc_id_map, f)
+        self._save_term_fst()
 
     def load(self):
         """Memuat doc_id_map and term_id_map dari output directory"""
@@ -56,6 +78,7 @@ class BSBIIndex:
             self.term_id_map = pickle.load(f)
         with open(os.path.join(self.output_dir, 'docs.dict'), 'rb') as f:
             self.doc_id_map = pickle.load(f)
+        self._load_term_fst()
 
     def parse_block(self, block_dir_relative):
         """
@@ -226,9 +249,7 @@ class BSBIIndex:
         if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
             self.load()
 
-        terms = [self.term_id_map.str_to_id[word]
-                 for word in query.split()
-                 if word in self.term_id_map.str_to_id]
+        terms = self._query_term_ids(query)
         with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
 
             scores = {}
@@ -261,9 +282,7 @@ class BSBIIndex:
         if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
             self.load()
 
-        terms = [self.term_id_map.str_to_id[word]
-                 for word in query.split()
-                 if word in self.term_id_map.str_to_id]
+        terms = self._query_term_ids(query)
         with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
             scores = {}
             N = len(merged_index.doc_length)
@@ -334,9 +353,7 @@ class BSBIIndex:
         if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
             self.load()
 
-        terms = [self.term_id_map.str_to_id[word]
-                 for word in query.split()
-                 if word in self.term_id_map.str_to_id]
+        terms = self._query_term_ids(query)
         if not terms:
             return []
 
@@ -433,6 +450,31 @@ class BSBIIndex:
 
             ranked = sorted(topk_heap, key=lambda x: x[0], reverse=True)
             return [(score, self.doc_id_map[doc_id]) for (score, doc_id) in ranked]
+
+    def _query_term_ids(self, query):
+        """
+        Konversi query string -> list term_id menggunakan FST dictionary.
+        Terms yang tidak ditemukan di-skip.
+        """
+        if self.term_fst is None:
+            self._load_term_fst()
+
+        term_ids = []
+        for word in query.split():
+            term_id = self.term_fst.lookup(word)
+            if term_id is not None:
+                term_ids.append(term_id)
+        return term_ids
+
+    def suggest_terms(self, prefix, limit=10):
+        """
+        Ambil kandidat term berdasarkan prefix dari FST.
+        """
+        if len(self.term_id_map) == 0:
+            self.load()
+        if self.term_fst is None:
+            self._load_term_fst()
+        return [term for (term, _) in self.term_fst.prefix_search(prefix, limit=limit)]
 
     def index(self):
         """

@@ -36,6 +36,8 @@ def build_arg_parser():
     parser.add_argument("--data-dir", default="collection", help="Path to collection directory")
     parser.add_argument("--output-dir", default="index", help="Path to index directory")
     parser.add_argument("--index-name", default="main_index", help="Merged index name")
+    parser.add_argument("--suggest-prefix", help="Prefix for FST term suggestions")
+    parser.add_argument("--suggest-limit", type=int, default=10, help="Maximum suggestion count")
     parser.add_argument(
         "--query",
         action="append",
@@ -49,6 +51,13 @@ def run_search(args):
                      postings_encoding=ENCODINGS[args.encoding],
                      output_dir=args.output_dir,
                      index_name=args.index_name)
+
+    if args.suggest_prefix:
+        suggestions = bsbi.suggest_terms(args.suggest_prefix, limit=args.suggest_limit)
+        print(f"Suggestions for prefix '{args.suggest_prefix}':")
+        for term in suggestions:
+            print(term)
+        print()
 
     queries = args.query if args.query else DEFAULT_QUERIES
 
