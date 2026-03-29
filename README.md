@@ -36,11 +36,26 @@ The codebase was extended to complete the main TP2 requirements.
 - The dictionary is flushed to intermediate index files every configurable number of documents, then merged into the final index.
 - Output index format is compatible with existing `search.py` and `evaluation.py`.
 
+### FST-Based Term Dictionary
+- Added `fst.py` as a finite-state transducer dictionary for term storage and lookup.
+- During indexing, term dictionary is also persisted as `terms.fst`.
+- During retrieval, query term lookup uses FST.
+- Added prefix suggestion feature in `search.py` (`--suggest-prefix`).
+
+Why this is useful:
+- Adds a structured automaton-based dictionary representation (bonus requirement).
+- Enables efficient prefix traversal for term suggestions.
+
+Why impact may look small in this project:
+- The collection is relatively small, so speed/memory differences vs simple dictionary are limited.
+- FST mostly improves dictionary organization and prefix-query capability, not ranking metric values (RBP/DCG/NDCG/AP).
+
 ## Project Structure
 - `bsbi.py`: indexing orchestration + retrieval methods (TF-IDF, BM25, BM25-WAND)
 - `index.py`: inverted index reader/writer and metadata storage
 - `compression.py`: postings compression classes (Standard, VBE, Rice)
 - `evaluation.py`: retrieval effectiveness evaluation
+- `fst.py`: finite-state transducer dictionary for terms (bonus)
 - `spimi.py`: separate SPIMI indexing module (bonus)
 - `search.py`: sample search script
 - `collection/`: document collection
@@ -82,6 +97,11 @@ Search with custom mode:
 python search.py --encoding rice --scoring bm25_wand --k 10 --query "lipid metabolism in pregnancy"
 ```
 
+Prefix suggestions from FST:
+```bash
+python search.py --encoding rice --suggest-prefix lip --suggest-limit 10 --query "lipid metabolism in pregnancy"
+```
+
 ### 3) Run Evaluation
 Default evaluation (TF-IDF):
 ```bash
@@ -108,4 +128,5 @@ print(bsbi.retrieve_bm25_wand("lipid metabolism in pregnancy", k=10))
 - Re-run indexing (`python bsbi.py`) after metadata schema changes to ensure all statistics are persisted.
 - `spimi.py` writes to `index` by default (same as `bsbi.py`), so running one indexer after another will overwrite index files.
 - The retrieval/evaluation `--encoding` must match the encoding used when building index files.
+- FST term suggestions are meant as dictionary capability demo and do not directly optimize ranking quality metrics.
 - For correctness checks, BM25 and BM25-WAND top-k results can be compared on the same queries.
