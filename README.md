@@ -78,6 +78,25 @@ Why impact may look small in this project:
   - `--boolean-base bm25` (default)
   - `--boolean-base tfidf`
 
+### Result Snippet + Highlighting
+- Added optional result snippet rendering in search output.
+- Snippet shows local context around matched terms and highlights them using `[[term]]`.
+- CLI options:
+  - `--with-snippet`
+  - `--snippet-window`
+  - `--snippet-max-chars`
+
+### Pseudo Relevance Feedback (Query Expansion)
+- Added lightweight PRF query expansion:
+  1. retrieve top documents from the initial query
+  2. collect candidate expansion terms from those documents
+  3. rank candidates using TF × IDF
+  4. append top terms to query and run retrieval
+- CLI options:
+  - `--prf`
+  - `--prf-docs`
+  - `--expand-terms`
+
 ## Project Structure
 - `bsbi.py`: indexing orchestration + retrieval methods (TF-IDF, BM25, BM25-WAND, Adaptive, Phrase, Proximity, Boolean)
 - `index.py`: inverted index reader/writer and metadata storage
@@ -148,6 +167,16 @@ python search.py --encoding rice --scoring proximity --proximity-distance 3 --k 
 Spell-corrected search:
 ```bash
 python search.py --encoding rice --scoring bm25 --spell-correct --max-edit-distance 2 --k 10 --query "lipd metabolism in pregnacy"
+```
+
+Search with snippets:
+```bash
+python search.py --encoding rice --scoring bm25 --with-snippet --snippet-window 6 --snippet-max-chars 180 --k 10 --query "lipid metabolism in pregnancy"
+```
+
+Search with PRF query expansion:
+```bash
+python search.py --encoding rice --scoring adaptive --prf --prf-docs 5 --expand-terms 3 --k 10 --query "lipid metabolism in pregnancy"
 ```
 
 Boolean retrieval:
@@ -227,5 +256,6 @@ Example result on this collection (one run):
 - The retrieval/evaluation `--encoding` must match the encoding used when building index files.
 - FST term suggestions are meant as dictionary capability demo and do not directly optimize ranking quality metrics.
 - Phrase and proximity retrieval depend on positional index file (`<index_name>.pos`), so indexing must be run first.
+- PRF can change ranking behavior (sometimes improves, sometimes drifts), so it is optional and should be compared against baseline retrieval.
 - BM25, BM25-WAND, and Adaptive can produce identical effectiveness scores because they use the same BM25 scoring function; differences are mostly in runtime behavior.
 - On PowerShell, boolean phrase queries with inner quotes are safest with `python --% ...`.
