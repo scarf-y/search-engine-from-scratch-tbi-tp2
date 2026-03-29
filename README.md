@@ -52,14 +52,31 @@ pip install tqdm
 python bsbi.py
 ```
 
-### 2) Run Sample Search (TF-IDF)
+Build index with specific compression:
+```bash
+python bsbi.py --encoding rice
+```
+
+### 2) Run Search
+Default search (sample queries, TF-IDF):
 ```bash
 python search.py
 ```
 
+Search with custom mode:
+```bash
+python search.py --encoding rice --scoring bm25_wand --k 10 --query "lipid metabolism in pregnancy"
+```
+
 ### 3) Run Evaluation
+Default evaluation (TF-IDF):
 ```bash
 python evaluation.py
+```
+
+Evaluation with custom mode:
+```bash
+python evaluation.py --encoding rice --scoring bm25_wand --k 1000
 ```
 
 ## BM25 / WAND Usage Example
@@ -75,4 +92,5 @@ print(bsbi.retrieve_bm25_wand("lipid metabolism in pregnancy", k=10))
 
 ## Notes
 - Re-run indexing (`python bsbi.py`) after metadata schema changes to ensure all statistics are persisted.
+- The retrieval/evaluation `--encoding` must match the encoding used when building index files.
 - For correctness checks, BM25 and BM25-WAND top-k results can be compared on the same queries.
