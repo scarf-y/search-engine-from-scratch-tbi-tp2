@@ -86,6 +86,7 @@ class SPIMIIndex(BSBIIndex):
                         for index_id in self.intermediate_indices
                     ]
                     self.merge(indices, merged_index)
+        self.build_and_save_positional_index()
 
 
 def build_arg_parser():

@@ -26,7 +26,7 @@ def build_arg_parser():
     )
     parser.add_argument(
         "--scoring",
-        choices=["tfidf", "bm25", "bm25_wand", "adaptive"],
+        choices=["tfidf", "bm25", "bm25_wand", "adaptive", "phrase", "proximity"],
         default="tfidf",
         help="Scoring method"
     )
@@ -36,6 +36,9 @@ def build_arg_parser():
     parser.add_argument("--data-dir", default="collection", help="Path to collection directory")
     parser.add_argument("--output-dir", default="index", help="Path to index directory")
     parser.add_argument("--index-name", default="main_index", help="Merged index name")
+    parser.add_argument("--proximity-distance", type=int, default=3, help="Max distance for proximity retrieval")
+    parser.add_argument("--spell-correct", action="store_true", help="Enable query spell correction")
+    parser.add_argument("--max-edit-distance", type=int, default=2, help="Max edit distance for spell correction")
     parser.add_argument("--suggest-prefix", help="Prefix for FST term suggestions")
     parser.add_argument("--suggest-limit", type=int, default=10, help="Maximum suggestion count")
     parser.add_argument(
@@ -62,16 +65,37 @@ def run_search(args):
     queries = args.query if args.query else DEFAULT_QUERIES
 
     for query in queries:
+        query_to_use = query
+        if args.spell_correct:
+            corrected_query, corrections = bsbi.correct_query(
+                query,
+                max_edit_distance=args.max_edit_distance,
+                top_n=1
+            )
+            if corrections:
+                print(f"Spell-corrected query: {corrected_query}")
+                for original, suggested in corrections:
+                    print(f"  {original} -> {suggested}")
+            query_to_use = corrected_query
+
         print("Query  : ", query)
         print("Results:")
         if args.scoring == "tfidf":
-            results = bsbi.retrieve_tfidf(query, k=args.k)
+            results = bsbi.retrieve_tfidf(query_to_use, k=args.k)
         elif args.scoring == "bm25":
-            results = bsbi.retrieve_bm25(query, k=args.k, k1=args.k1, b=args.b)
+            results = bsbi.retrieve_bm25(query_to_use, k=args.k, k1=args.k1, b=args.b)
         elif args.scoring == "bm25_wand":
-            results = bsbi.retrieve_bm25_wand(query, k=args.k, k1=args.k1, b=args.b)
-        else:
-            results = bsbi.retrieve_adaptive(query, k=args.k, k1=args.k1, b=args.b)
+            results = bsbi.retrieve_bm25_wand(query_to_use, k=args.k, k1=args.k1, b=args.b)
+        elif args.scoring == "adaptive":
+            results = bsbi.retrieve_adaptive(query_to_use, k=args.k, k1=args.k1, b=args.b)
+        elif args.scoring == "phrase":
+            results = bsbi.retrieve_phrase(query_to_use, k=args.k)
+        else:  # proximity
+            results = bsbi.retrieve_proximity(
+                query_to_use,
+                max_distance=args.proximity_distance,
+                k=args.k
+            )
 
         for (score, doc) in results:
             print(f"{doc:30} {score:>.3f}")

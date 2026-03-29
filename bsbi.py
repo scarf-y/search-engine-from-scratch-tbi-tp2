@@ -40,6 +40,8 @@ class BSBIIndex:
         self.postings_encoding = postings_encoding
         self.term_fst = None
         self.term_fst_path = os.path.join(self.output_dir, "terms.fst")
+        self.positional_index = None
+        self.positional_index_path = os.path.join(self.output_dir, f"{self.index_name}.pos")
 
         # Untuk menyimpan nama-nama file dari semua intermediate inverted index
         self.intermediate_indices = []
@@ -60,6 +62,53 @@ class BSBIIndex:
         else:
             # Backward-compatible jika index lama belum punya terms.fst
             self._build_term_fst()
+
+    def _save_positional_index(self):
+        if self.positional_index is None:
+            return
+        with open(self.positional_index_path, "wb") as f:
+            pickle.dump(self.positional_index, f)
+
+    def _load_positional_index(self):
+        if self.positional_index is not None:
+            return
+        if os.path.exists(self.positional_index_path):
+            with open(self.positional_index_path, "rb") as f:
+                self.positional_index = pickle.load(f)
+            return
+
+        # Backward-compatible fallback jika positional index belum tersedia:
+        # bangun dari koleksi dokumen saat ini.
+        self.build_and_save_positional_index()
+
+    def build_and_save_positional_index(self):
+        """
+        Membangun positional index:
+            term_id -> {doc_id -> [positions]}
+        Lalu menyimpannya ke file terpisah.
+        """
+        if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
+            self.load()
+
+        self.positional_index = {}
+        block_dirs = sorted(next(os.walk(self.data_dir))[1])
+        for block_dir_relative in block_dirs:
+            block_dir = "./" + self.data_dir + "/" + block_dir_relative
+            for filename in sorted(next(os.walk(block_dir))[2]):
+                docname = block_dir + "/" + filename
+                doc_id = self.doc_id_map[docname]
+                with open(docname, "r", encoding="utf8", errors="surrogateescape") as f:
+                    for pos, token in enumerate(f.read().split()):
+                        term_id = self.term_id_map.str_to_id.get(token)
+                        if term_id is None:
+                            continue
+                        if term_id not in self.positional_index:
+                            self.positional_index[term_id] = {}
+                        if doc_id not in self.positional_index[term_id]:
+                            self.positional_index[term_id][doc_id] = []
+                        self.positional_index[term_id][doc_id].append(pos)
+
+        self._save_positional_index()
 
     def save(self):
         """Menyimpan doc_id_map and term_id_map ke output directory via pickle"""
@@ -451,6 +500,92 @@ class BSBIIndex:
             ranked = sorted(topk_heap, key=lambda x: x[0], reverse=True)
             return [(score, self.doc_id_map[doc_id]) for (score, doc_id) in ranked]
 
+    def retrieve_phrase(self, phrase_query, k = 10):
+        """
+        Exact phrase retrieval berdasarkan positional index.
+        Score = jumlah kemunculan exact phrase dalam dokumen.
+        """
+        if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
+            self.load()
+        self._load_positional_index()
+
+        term_ids = self._query_term_ids(phrase_query)
+        if len(term_ids) == 0:
+            return []
+
+        for term_id in term_ids:
+            if term_id not in self.positional_index:
+                return []
+
+        candidate_docs = set(self.positional_index[term_ids[0]].keys())
+        for term_id in term_ids[1:]:
+            candidate_docs &= set(self.positional_index[term_id].keys())
+        if not candidate_docs:
+            return []
+
+        results = []
+        for doc_id in candidate_docs:
+            phrase_starts = set(self.positional_index[term_ids[0]][doc_id])
+            for offset, term_id in enumerate(term_ids[1:], start=1):
+                shifted = {p - offset for p in self.positional_index[term_id][doc_id]}
+                phrase_starts &= shifted
+                if not phrase_starts:
+                    break
+
+            occurrences = len(phrase_starts)
+            if occurrences > 0:
+                results.append((float(occurrences), self.doc_id_map[doc_id]))
+
+        return sorted(results, key=lambda x: x[0], reverse=True)[:k]
+
+    def retrieve_proximity(self, proximity_query, max_distance = 3, k = 10):
+        """
+        Proximity retrieval dua-term:
+        score dokumen = jumlah pasangan posisi term1-term2 dengan |pos1-pos2| <= max_distance.
+        Jika query berisi >2 term, dua term pertama yang dipakai.
+        """
+        if max_distance < 0:
+            raise ValueError("max_distance harus >= 0")
+        if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
+            self.load()
+        self._load_positional_index()
+
+        term_ids = self._query_term_ids(proximity_query)
+        if len(term_ids) < 2:
+            return []
+        term_a, term_b = term_ids[0], term_ids[1]
+
+        if term_a not in self.positional_index or term_b not in self.positional_index:
+            return []
+
+        candidate_docs = set(self.positional_index[term_a].keys()) & set(self.positional_index[term_b].keys())
+        if not candidate_docs:
+            return []
+
+        results = []
+        for doc_id in candidate_docs:
+            pos_a = self.positional_index[term_a][doc_id]
+            pos_b = self.positional_index[term_b][doc_id]
+            i, j = 0, 0
+            matches = 0
+            while i < len(pos_a) and j < len(pos_b):
+                distance = abs(pos_a[i] - pos_b[j])
+                if distance <= max_distance and pos_a[i] != pos_b[j]:
+                    matches += 1
+                    if pos_a[i] <= pos_b[j]:
+                        i += 1
+                    else:
+                        j += 1
+                elif pos_a[i] < pos_b[j]:
+                    i += 1
+                else:
+                    j += 1
+
+            if matches > 0:
+                results.append((float(matches), self.doc_id_map[doc_id]))
+
+        return sorted(results, key=lambda x: x[0], reverse=True)[:k]
+
     def retrieve_adaptive(self, query, k = 10, k1 = 1.2, b = 0.75,
                           df_ratio_threshold = 0.08, long_query_threshold = 4):
         """
@@ -504,6 +639,101 @@ class BSBIIndex:
                 term_ids.append(term_id)
         return term_ids
 
+    @staticmethod
+    def _edit_distance(a, b):
+        """Levenshtein edit distance."""
+        if a == b:
+            return 0
+        if len(a) == 0:
+            return len(b)
+        if len(b) == 0:
+            return len(a)
+
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a, start=1):
+            curr = [i]
+            for j, cb in enumerate(b, start=1):
+                cost = 0 if ca == cb else 1
+                curr.append(min(
+                    prev[j] + 1,      # delete
+                    curr[j - 1] + 1,  # insert
+                    prev[j - 1] + cost  # replace
+                ))
+            prev = curr
+        return prev[-1]
+
+    def suggest_spelling(self, term, max_edit_distance = 2, top_n = 3, candidate_limit = 300):
+        """
+        Spell suggestions untuk satu term menggunakan FST dictionary + edit distance.
+        """
+        if len(self.term_id_map) == 0:
+            self.load()
+        if self.term_fst is None:
+            self._load_term_fst()
+
+        if self.term_fst.contains(term):
+            return [term]
+
+        candidate_terms = set()
+        prefixes = []
+        if len(term) >= 1:
+            prefixes.append(term[:1])
+        if len(term) >= 2:
+            prefixes.append(term[:2])
+        if len(term) >= 3:
+            prefixes.append(term[:3])
+
+        for prefix in prefixes:
+            for cand, _ in self.term_fst.prefix_search(prefix, limit=candidate_limit):
+                candidate_terms.add(cand)
+
+        # fallback bila prefix tidak menghasilkan kandidat
+        if not candidate_terms:
+            candidate_terms = set(self.term_id_map.id_to_str[:candidate_limit])
+
+        scored = []
+        for cand in candidate_terms:
+            dist = self._edit_distance(term, cand)
+            if dist <= max_edit_distance:
+                non_alpha_penalty = 0 if cand.isalpha() else 1
+                shorter_penalty = 0 if len(cand) >= len(term) else 1
+                scored.append((dist, non_alpha_penalty, shorter_penalty, abs(len(cand) - len(term)), cand))
+
+        scored.sort(key=lambda x: (x[0], x[1], x[2], x[3], x[4]))
+        return [cand for (_, _, _, _, cand) in scored[:top_n]]
+
+    def correct_query(self, query, max_edit_distance = 2, top_n = 1):
+        """
+        Koreksi query token-per-token.
+        Return:
+          corrected_query: str
+          corrections: List[(original_token, suggested_token)]
+        """
+        if len(self.term_id_map) == 0:
+            self.load()
+        if self.term_fst is None:
+            self._load_term_fst()
+
+        corrected_tokens = []
+        corrections = []
+        for token in query.split():
+            if self.term_fst.contains(token):
+                corrected_tokens.append(token)
+                continue
+
+            suggestions = self.suggest_spelling(
+                token,
+                max_edit_distance=max_edit_distance,
+                top_n=max(1, top_n)
+            )
+            if suggestions:
+                corrected_tokens.append(suggestions[0])
+                corrections.append((token, suggestions[0]))
+            else:
+                corrected_tokens.append(token)
+
+        return " ".join(corrected_tokens), corrections
+
     def suggest_terms(self, prefix, limit=10):
         """
         Ambil kandidat term berdasarkan prefix dari FST.
@@ -540,6 +770,7 @@ class BSBIIndex:
                 indices = [stack.enter_context(InvertedIndexReader(index_id, self.postings_encoding, directory=self.output_dir))
                                for index_id in self.intermediate_indices]
                 self.merge(indices, merged_index)
+        self.build_and_save_positional_index()
 
 
 if __name__ == "__main__":

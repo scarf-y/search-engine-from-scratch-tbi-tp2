@@ -1,6 +1,7 @@
 index/*.index
 index/*.dict
 index/*.fst
+index/*.pos
 tmp/*
 __pycache__/
 *.pyc
