@@ -4,11 +4,18 @@ import contextlib
 import heapq
 import time
 import math
+import argparse
 
 from index import InvertedIndexReader, InvertedIndexWriter
 from util import IdMap, sorted_merge_posts_and_tfs
-from compression import StandardPostings, VBEPostings
+from compression import StandardPostings, VBEPostings, RicePostings
 from tqdm import tqdm
+
+ENCODINGS = {
+    "standard": StandardPostings,
+    "vbe": VBEPostings,
+    "rice": RicePostings
+}
 
 class BSBIIndex:
     """
@@ -164,6 +171,22 @@ class BSBIIndex:
                 curr, postings, tf_list = t, postings_, tf_list_
         merged_index.append(curr, postings, tf_list)
 
+    @staticmethod
+    def _ensure_postings_tf_alignment(term, postings, tf_list, encoding):
+        """
+        Validasi bahwa postings dan tf_list punya panjang yang sama.
+        Jika tidak sama, kemungkinan besar index dibaca dengan encoding berbeda
+        dari encoding saat indexing.
+        """
+        if len(postings) != len(tf_list):
+            raise ValueError(
+                f"Postings/TF length mismatch for term_id={term}: "
+                f"len(postings)={len(postings)} vs len(tf_list)={len(tf_list)}. "
+                "Likely caused by encoding mismatch. "
+                f"Please rebuild index using the same encoding ({encoding.__name__}) "
+                "or run retrieval with matching --encoding."
+            )
+
     def retrieve_tfidf(self, query, k = 10):
         """
         Melakukan Ranked Retrieval dengan skema TaaT (Term-at-a-Time).
@@ -214,6 +237,7 @@ class BSBIIndex:
                     df = merged_index.postings_dict[term][1]
                     N = len(merged_index.doc_length)
                     postings, tf_list = merged_index.get_postings_list(term)
+                    self._ensure_postings_tf_alignment(term, postings, tf_list, self.postings_encoding)
                     for i in range(len(postings)):
                         doc_id, tf = postings[i], tf_list[i]
                         if doc_id not in scores:
@@ -256,6 +280,7 @@ class BSBIIndex:
                     continue
                 idf = math.log(N / df)
                 postings, tf_list = merged_index.get_postings_list(term)
+                self._ensure_postings_tf_alignment(term, postings, tf_list, self.postings_encoding)
 
                 for i in range(len(postings)):
                     doc_id, tf = postings[i], tf_list[i]
@@ -327,6 +352,7 @@ class BSBIIndex:
                     continue
 
                 postings, tf_list = merged_index.get_postings_list(term)
+                self._ensure_postings_tf_alignment(term, postings, tf_list, self.postings_encoding)
                 if not postings:
                     continue
 
@@ -437,8 +463,22 @@ class BSBIIndex:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Build inverted index with BSBI."
+    )
+    parser.add_argument("--data-dir", default="collection", help="Path to collection directory")
+    parser.add_argument("--output-dir", default="index", help="Path to index output directory")
+    parser.add_argument("--index-name", default="main_index", help="Main merged index file name")
+    parser.add_argument(
+        "--encoding",
+        choices=sorted(ENCODINGS.keys()),
+        default="vbe",
+        help="Postings encoding algorithm"
+    )
+    args = parser.parse_args()
 
-    BSBI_instance = BSBIIndex(data_dir = 'collection', \
-                              postings_encoding = VBEPostings, \
-                              output_dir = 'index')
+    BSBI_instance = BSBIIndex(data_dir=args.data_dir,
+                              postings_encoding=ENCODINGS[args.encoding],
+                              output_dir=args.output_dir,
+                              index_name=args.index_name)
     BSBI_instance.index() # memulai indexing!

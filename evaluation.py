@@ -1,7 +1,17 @@
+import argparse
 import math
 import re
+
 from bsbi import BSBIIndex
-from compression import VBEPostings
+from compression import StandardPostings, VBEPostings, RicePostings
+
+ENCODINGS = {
+  "standard": StandardPostings,
+  "vbe": VBEPostings,
+  "rice": RicePostings
+}
+
+SCORINGS = ("tfidf", "bm25", "bm25_wand")
 
 ######## >>>>> sebuah IR metric: RBP p = 0.8
 
@@ -82,7 +92,6 @@ def load_qrels(qrel_file = "qrels.txt", max_q_id = 30, max_doc_id = 1033):
       dimana, misal, qrels["Q3"][12] = 1 artinya Doc 12
       relevan dengan Q3; dan qrels["Q3"][10] = 0 artinya
       Doc 10 tidak relevan dengan Q3.
-
   """
   qrels = {"Q" + str(i): {i: 0 for i in range(1, max_doc_id + 1)}
            for i in range(1, max_q_id + 1)}
@@ -91,20 +100,49 @@ def load_qrels(qrel_file = "qrels.txt", max_q_id = 30, max_doc_id = 1033):
       parts = line.strip().split()
       qid = parts[0]
       did = int(parts[1])
-      qrels[qid][did] = 1
+      if qid in qrels and 1 <= did <= max_doc_id:
+        qrels[qid][did] = 1
   return qrels
+
+def _extract_doc_id(doc_path):
+  """
+  Ambil numeric doc id dari path dokumen:
+  ./collection/11/1032.txt -> 1032
+  """
+  match = re.search(r'(?:/|\\)(\d+)\.txt$', doc_path)
+  if not match:
+    raise ValueError(f"Tidak bisa ekstrak doc id dari path: {doc_path}")
+  return int(match.group(1))
+
+def _retrieve(bsbi_instance, scoring, query, k, k1, b):
+  if scoring == "tfidf":
+    return bsbi_instance.retrieve_tfidf(query, k = k)
+  if scoring == "bm25":
+    return bsbi_instance.retrieve_bm25(query, k = k, k1 = k1, b = b)
+  return bsbi_instance.retrieve_bm25_wand(query, k = k, k1 = k1, b = b)
 
 ######## >>>>> EVALUASI !
 
-def eval(qrels, query_file = "queries.txt", k = 1000):
+def eval(qrels,
+         query_file = "queries.txt",
+         k = 1000,
+         scoring = "tfidf",
+         postings_encoding = VBEPostings,
+         data_dir = "collection",
+         output_dir = "index",
+         index_name = "main_index",
+         k1 = 1.2,
+         b = 0.75,
+         rbp_p = 0.8):
   """
     loop ke semua 30 query, hitung score di setiap query,
     lalu hitung MEAN SCORE over those 30 queries.
     untuk setiap query, kembalikan top-k documents
   """
-  BSBI_instance = BSBIIndex(data_dir = 'collection',
-                            postings_encoding = VBEPostings,
-                            output_dir = 'index')
+  bsbi_instance = BSBIIndex(data_dir = data_dir,
+                            postings_encoding = postings_encoding,
+                            output_dir = output_dir,
+                            index_name = index_name)
 
   with open(query_file) as file:
     rbp_scores = []
@@ -114,14 +152,14 @@ def eval(qrels, query_file = "queries.txt", k = 1000):
 
     for qline in file:
       parts = qline.strip().split()
+      if not parts:
+        continue
       qid = parts[0]
       query = " ".join(parts[1:])
 
-      # HATI-HATI, doc id saat indexing bisa jadi berbeda dengan doc id
-      # yang tertera di qrels
       ranking = []
-      for (score, doc) in BSBI_instance.retrieve_tfidf(query, k = k):
-        did = int(re.search(r'\/.*\/.*\/(.*)\.txt', doc).group(1))
+      for (score, doc) in _retrieve(bsbi_instance, scoring, query, k, k1, b):
+        did = _extract_doc_id(doc)
         ranking.append(qrels[qid][did])
 
       # Jika retrieval mengembalikan kurang dari k dokumen, sisanya diasumsikan non-relevan
@@ -131,21 +169,64 @@ def eval(qrels, query_file = "queries.txt", k = 1000):
         ranking = ranking[:k]
 
       n_relevant = sum(qrels[qid].values())
-      rbp_scores.append(rbp(ranking))
+      rbp_scores.append(rbp(ranking, p = rbp_p))
       dcg_scores.append(dcg(ranking))
       ndcg_scores.append(ndcg(ranking))
       ap_scores.append(average_precision(ranking, n_relevant))
 
-  print("Hasil evaluasi TF-IDF terhadap 30 queries")
+  scoring_name = scoring.upper()
+  print(f"Hasil evaluasi {scoring_name} terhadap 30 queries")
   print("RBP score =", sum(rbp_scores) / len(rbp_scores))
   print("DCG score =", sum(dcg_scores) / len(dcg_scores))
   print("NDCG score =", sum(ndcg_scores) / len(ndcg_scores))
   print("AP score =", sum(ap_scores) / len(ap_scores))
 
+def build_arg_parser():
+  parser = argparse.ArgumentParser(description="Evaluate retrieval effectiveness.")
+  parser.add_argument("--qrels-file", default="qrels.txt", help="Path to qrels file")
+  parser.add_argument("--query-file", default="queries.txt", help="Path to query file")
+  parser.add_argument("--max-q-id", type=int, default=30, help="Maximum query ID in qrels")
+  parser.add_argument("--max-doc-id", type=int, default=1033, help="Maximum doc ID in qrels")
+  parser.add_argument("--k", type=int, default=1000, help="Top-k cutoff for evaluation")
+  parser.add_argument(
+    "--encoding",
+    choices=sorted(ENCODINGS.keys()),
+    default="vbe",
+    help="Postings encoding used by index"
+  )
+  parser.add_argument(
+    "--scoring",
+    choices=SCORINGS,
+    default="tfidf",
+    help="Scoring function"
+  )
+  parser.add_argument("--data-dir", default="collection", help="Path to collection directory")
+  parser.add_argument("--output-dir", default="index", help="Path to index directory")
+  parser.add_argument("--index-name", default="main_index", help="Merged index name")
+  parser.add_argument("--k1", type=float, default=1.2, help="BM25 k1 parameter")
+  parser.add_argument("--b", type=float, default=0.75, help="BM25 b parameter")
+  parser.add_argument("--rbp-p", type=float, default=0.8, help="RBP persistence parameter")
+  return parser
+
 if __name__ == '__main__':
-  qrels = load_qrels()
+  parser = build_arg_parser()
+  args = parser.parse_args()
+
+  qrels = load_qrels(qrel_file = args.qrels_file,
+                     max_q_id = args.max_q_id,
+                     max_doc_id = args.max_doc_id)
 
   assert qrels["Q1"][166] == 1, "qrels salah"
   assert qrels["Q1"][300] == 0, "qrels salah"
 
-  eval(qrels)
+  eval(qrels,
+       query_file = args.query_file,
+       k = args.k,
+       scoring = args.scoring,
+       postings_encoding = ENCODINGS[args.encoding],
+       data_dir = args.data_dir,
+       output_dir = args.output_dir,
+       index_name = args.index_name,
+       k1 = args.k1,
+       b = args.b,
+       rbp_p = args.rbp_p)
