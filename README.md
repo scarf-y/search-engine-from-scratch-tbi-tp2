@@ -28,6 +28,13 @@ The codebase was extended to complete the main TP2 requirements.
 - Added `retrieve_bm25_wand(...)` in `bsbi.py`.
 - Inverted index metadata now stores extra per-term statistic (`max_tf`) to compute upper bounds for WAND pruning.
 
+### 5) Adaptive Retrieval
+- Added `retrieve_adaptive(...)` in `bsbi.py`.
+- Adaptive strategy selects between:
+  - `BM25`
+  - `BM25 + WAND`
+- Heuristic is based on query length and document frequency profile of query terms.
+
 ## Bonus Feature
 ### SPIMI Indexing Mode (Separate Module)
 - Added `spimi.py` as a separate SPIMI indexer.
@@ -51,7 +58,7 @@ Why impact may look small in this project:
 - FST mostly improves dictionary organization and prefix-query capability, not ranking metric values (RBP/DCG/NDCG/AP).
 
 ## Project Structure
-- `bsbi.py`: indexing orchestration + retrieval methods (TF-IDF, BM25, BM25-WAND)
+- `bsbi.py`: indexing orchestration + retrieval methods (TF-IDF, BM25, BM25-WAND, Adaptive)
 - `index.py`: inverted index reader/writer and metadata storage
 - `compression.py`: postings compression classes (Standard, VBE, Rice)
 - `evaluation.py`: retrieval effectiveness evaluation
@@ -97,6 +104,11 @@ Search with custom mode:
 python search.py --encoding rice --scoring bm25_wand --k 10 --query "lipid metabolism in pregnancy"
 ```
 
+Adaptive retrieval mode:
+```bash
+python search.py --encoding rice --scoring adaptive --k 10 --query "lipid metabolism in pregnancy"
+```
+
 Prefix suggestions from FST:
 ```bash
 python search.py --encoding rice --suggest-prefix lip --suggest-limit 10 --query "lipid metabolism in pregnancy"
@@ -113,6 +125,11 @@ Evaluation with custom mode:
 python evaluation.py --encoding rice --scoring bm25_wand --k 1000
 ```
 
+Adaptive evaluation:
+```bash
+python evaluation.py --encoding rice --scoring adaptive --k 1000
+```
+
 ## BM25 / WAND Usage Example
 ```python
 from bsbi import BSBIIndex
@@ -122,11 +139,45 @@ bsbi = BSBIIndex(data_dir="collection", output_dir="index", postings_encoding=VB
 
 print(bsbi.retrieve_bm25("lipid metabolism in pregnancy", k=10))
 print(bsbi.retrieve_bm25_wand("lipid metabolism in pregnancy", k=10))
+print(bsbi.retrieve_adaptive("lipid metabolism in pregnancy", k=10))
 ```
+
+## Runtime Benchmark Snippet
+```python
+import time
+from bsbi import BSBIIndex
+from compression import VBEPostings
+
+bsbi = BSBIIndex(data_dir="collection", output_dir="index", postings_encoding=VBEPostings)
+
+queries = []
+with open("queries.txt", encoding="utf8") as f:
+    for line in f:
+        parts = line.strip().split()
+        if parts:
+            queries.append(" ".join(parts[1:]))
+
+def bench(name, fn):
+    t0 = time.perf_counter()
+    for q in queries:
+        fn(q)
+    dt = time.perf_counter() - t0
+    print(f"{name}: total={dt:.6f}s avg={dt/len(queries):.6f}s")
+
+k = 200
+bench("BM25", lambda q: bsbi.retrieve_bm25(q, k=k))
+bench("BM25_WAND", lambda q: bsbi.retrieve_bm25_wand(q, k=k))
+bench("ADAPTIVE", lambda q: bsbi.retrieve_adaptive(q, k=k))
+```
+
+Example result on this collection (one run):
+- `BM25: total=0.556743s avg=0.018558s`
+- `BM25_WAND: total=0.687092s avg=0.022903s`
+- `ADAPTIVE: total=1.033690s avg=0.034456s`
 
 ## Notes
 - Re-run indexing (`python bsbi.py`) after metadata schema changes to ensure all statistics are persisted.
 - `spimi.py` writes to `index` by default (same as `bsbi.py`), so running one indexer after another will overwrite index files.
 - The retrieval/evaluation `--encoding` must match the encoding used when building index files.
 - FST term suggestions are meant as dictionary capability demo and do not directly optimize ranking quality metrics.
-- For correctness checks, BM25 and BM25-WAND top-k results can be compared on the same queries.
+- BM25, BM25-WAND, and Adaptive can produce identical effectiveness scores because they use the same BM25 scoring function; differences are mostly in runtime behavior.
