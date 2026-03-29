@@ -5,6 +5,7 @@ import heapq
 import time
 import math
 import argparse
+import re
 
 from index import InvertedIndexReader, InvertedIndexWriter
 from util import IdMap, sorted_merge_posts_and_tfs
@@ -623,6 +624,200 @@ class BSBIIndex:
         if use_wand:
             return self.retrieve_bm25_wand(query, k = k, k1 = k1, b = b)
         return self.retrieve_bm25(query, k = k, k1 = k1, b = b)
+
+    @staticmethod
+    def _tokenize_boolean_query(query):
+        """
+        Tokenisasi query boolean:
+        - operator: AND, OR, NOT (case-insensitive)
+        - parenthesis: ( )
+        - phrase clause: "..."
+        - term clause: token biasa
+        """
+        tokens = []
+        i = 0
+        while i < len(query):
+            ch = query[i]
+            if ch.isspace():
+                i += 1
+                continue
+            if ch in ("(", ")"):
+                tokens.append(ch)
+                i += 1
+                continue
+            if ch == '"':
+                j = i + 1
+                while j < len(query) and query[j] != '"':
+                    j += 1
+                phrase = query[i + 1:j].strip()
+                if phrase:
+                    tokens.append(f"\"{phrase}\"")
+                i = j + 1 if j < len(query) else len(query)
+                continue
+
+            j = i
+            while j < len(query) and (not query[j].isspace()) and query[j] not in ("(", ")"):
+                j += 1
+            token = query[i:j]
+            upper = token.upper()
+            if upper in ("AND", "OR", "NOT"):
+                tokens.append(upper)
+            else:
+                tokens.append(token)
+            i = j
+
+        return tokens
+
+    @staticmethod
+    def _boolean_to_postfix(tokens):
+        """
+        Konversi infix boolean query -> postfix dengan Shunting-yard.
+        """
+        precedence = {"OR": 1, "AND": 2, "NOT": 3}
+        operators = set(precedence.keys())
+        output = []
+        stack = []
+
+        for token in tokens:
+            if token == "(":
+                stack.append(token)
+            elif token == ")":
+                while stack and stack[-1] != "(":
+                    output.append(stack.pop())
+                if not stack:
+                    raise ValueError("Mismatched parenthesis in boolean query")
+                stack.pop()  # consume '('
+            elif token in operators:
+                while stack and stack[-1] in operators:
+                    top = stack[-1]
+                    # NOT bersifat right-associative (unary)
+                    if precedence[top] > precedence[token] or \
+                       (precedence[top] == precedence[token] and token != "NOT"):
+                        output.append(stack.pop())
+                    else:
+                        break
+                stack.append(token)
+            else:
+                output.append(token)
+
+        while stack:
+            if stack[-1] in ("(", ")"):
+                raise ValueError("Mismatched parenthesis in boolean query")
+            output.append(stack.pop())
+
+        return output
+
+    def _documents_for_boolean_clause(self, clause, merged_index):
+        """
+        Ambil set doc_id untuk satu clause:
+        - "..." -> phrase retrieval
+        - term  -> postings list
+        """
+        if clause.startswith('"') and clause.endswith('"') and len(clause) >= 2:
+            phrase = clause[1:-1]
+            phrase_docs = self.retrieve_phrase(phrase, k = len(self.doc_id_map))
+            doc_ids = set()
+            for (_, doc_path) in phrase_docs:
+                doc_id = self.doc_id_map.str_to_id.get(doc_path)
+                if doc_id is not None:
+                    doc_ids.add(doc_id)
+            return doc_ids
+
+        term_id = self.term_fst.lookup(clause) if self.term_fst else None
+        if term_id is None or term_id not in merged_index.postings_dict:
+            return set()
+
+        postings, tf_list = merged_index.get_postings_list(term_id)
+        self._ensure_postings_tf_alignment(term_id, postings, tf_list, self.postings_encoding)
+        return set(postings)
+
+    @staticmethod
+    def _extract_terms_for_scoring(boolean_query):
+        """
+        Ambil token term dari boolean query untuk scoring backend (BM25/TF-IDF).
+        Operator boolean dan parenthesis diabaikan.
+        """
+        tokens = BSBIIndex._tokenize_boolean_query(boolean_query)
+        terms = []
+        for token in tokens:
+            if token in ("AND", "OR", "NOT", "(", ")"):
+                continue
+            if token.startswith('"') and token.endswith('"') and len(token) >= 2:
+                terms.extend(token[1:-1].split())
+            else:
+                terms.append(token)
+        return terms
+
+    def retrieve_boolean(self, boolean_query, k = 10, base_scoring = "bm25", k1 = 1.2, b = 0.75):
+        """
+        Boolean retrieval dengan operator AND/OR/NOT, parenthesis, dan phrase clause.
+        Ranking menggunakan backend score:
+        - bm25 (default)
+        - tfidf
+        """
+        if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
+            self.load()
+
+        if self.term_fst is None:
+            self._load_term_fst()
+
+        tokens = self._tokenize_boolean_query(boolean_query)
+        if not tokens:
+            return []
+
+        postfix = self._boolean_to_postfix(tokens)
+        all_docs = set(range(len(self.doc_id_map)))
+
+        with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
+            stack = []
+            for token in postfix:
+                if token == "NOT":
+                    if not stack:
+                        raise ValueError("Malformed boolean query: NOT without operand")
+                    operand = stack.pop()
+                    stack.append(all_docs - operand)
+                elif token in ("AND", "OR"):
+                    if len(stack) < 2:
+                        raise ValueError(f"Malformed boolean query: {token} without enough operands")
+                    right = stack.pop()
+                    left = stack.pop()
+                    if token == "AND":
+                        stack.append(left & right)
+                    else:
+                        stack.append(left | right)
+                else:
+                    stack.append(self._documents_for_boolean_clause(token, merged_index))
+
+        if len(stack) != 1:
+            raise ValueError("Malformed boolean query")
+
+        candidate_doc_ids = stack[0]
+        if not candidate_doc_ids:
+            return []
+
+        query_terms = self._extract_terms_for_scoring(boolean_query)
+        scoring_query = " ".join(query_terms)
+        score_by_doc = {}
+
+        if scoring_query.strip():
+            max_k = len(self.doc_id_map)
+            if base_scoring == "tfidf":
+                scored_docs = self.retrieve_tfidf(scoring_query, k = max_k)
+            else:
+                scored_docs = self.retrieve_bm25(scoring_query, k = max_k, k1 = k1, b = b)
+
+            for score, doc_path in scored_docs:
+                doc_id = self.doc_id_map.str_to_id.get(doc_path)
+                if doc_id is not None:
+                    score_by_doc[doc_id] = score
+
+        ranked = []
+        for doc_id in candidate_doc_ids:
+            score = score_by_doc.get(doc_id, 0.0)
+            ranked.append((score, self.doc_id_map[doc_id]))
+
+        ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return ranked[:k]
 
     def _query_term_ids(self, query):
         """

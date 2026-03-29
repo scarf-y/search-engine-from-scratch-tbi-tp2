@@ -26,13 +26,15 @@ def build_arg_parser():
     )
     parser.add_argument(
         "--scoring",
-        choices=["tfidf", "bm25", "bm25_wand", "adaptive", "phrase", "proximity"],
+        choices=["tfidf", "bm25", "bm25_wand", "adaptive", "phrase", "proximity", "boolean"],
         default="tfidf",
         help="Scoring method"
     )
     parser.add_argument("--k", type=int, default=10, help="Top-k results")
     parser.add_argument("--k1", type=float, default=1.2, help="BM25 k1 parameter")
     parser.add_argument("--b", type=float, default=0.75, help="BM25 b parameter")
+    parser.add_argument("--boolean-base", choices=["bm25", "tfidf"], default="bm25",
+                        help="Base scorer for boolean retrieval ranking")
     parser.add_argument("--data-dir", default="collection", help="Path to collection directory")
     parser.add_argument("--output-dir", default="index", help="Path to index directory")
     parser.add_argument("--index-name", default="main_index", help="Merged index name")
@@ -90,12 +92,25 @@ def run_search(args):
             results = bsbi.retrieve_adaptive(query_to_use, k=args.k, k1=args.k1, b=args.b)
         elif args.scoring == "phrase":
             results = bsbi.retrieve_phrase(query_to_use, k=args.k)
-        else:  # proximity
+        elif args.scoring == "proximity":
             results = bsbi.retrieve_proximity(
                 query_to_use,
                 max_distance=args.proximity_distance,
                 k=args.k
             )
+        else:  # boolean
+            try:
+                results = bsbi.retrieve_boolean(
+                    query_to_use,
+                    k=args.k,
+                    base_scoring=args.boolean_base,
+                    k1=args.k1,
+                    b=args.b
+                )
+            except ValueError as exc:
+                print(f"Boolean query error: {exc}")
+                print()
+                continue
 
         for (score, doc) in results:
             print(f"{doc:30} {score:>.3f}")
