@@ -69,8 +69,17 @@ Why impact may look small in this project:
 - In search CLI, enable via `--spell-correct`.
 - Useful when query terms are misspelled (e.g., `pregnacy -> pregnancy`).
 
+### Boolean Query Parser
+- Added boolean retrieval mode with support for:
+  - `AND`, `OR`, `NOT`
+  - parenthesis: `( ... )`
+  - phrase clause: `"..."` (e.g., `"lipid metabolism" AND pregnancy`)
+- Added scoring backend choice for ranking matched boolean documents:
+  - `--boolean-base bm25` (default)
+  - `--boolean-base tfidf`
+
 ## Project Structure
-- `bsbi.py`: indexing orchestration + retrieval methods (TF-IDF, BM25, BM25-WAND, Adaptive, Phrase, Proximity)
+- `bsbi.py`: indexing orchestration + retrieval methods (TF-IDF, BM25, BM25-WAND, Adaptive, Phrase, Proximity, Boolean)
 - `index.py`: inverted index reader/writer and metadata storage
 - `compression.py`: postings compression classes (Standard, VBE, Rice)
 - `evaluation.py`: retrieval effectiveness evaluation
@@ -141,6 +150,16 @@ Spell-corrected search:
 python search.py --encoding rice --scoring bm25 --spell-correct --max-edit-distance 2 --k 10 --query "lipd metabolism in pregnacy"
 ```
 
+Boolean retrieval:
+```bash
+python search.py --encoding rice --scoring boolean --boolean-base bm25 --k 10 --query "(lipid OR pregnancy) AND NOT toxemia"
+```
+
+Boolean retrieval with phrase clause:
+```bash
+python --% search.py --encoding rice --scoring boolean --boolean-base bm25 --k 10 --query "\"lipid metabolism\" AND pregnancy"
+```
+
 ### 3) Run Evaluation
 Default evaluation (TF-IDF):
 ```bash
@@ -209,3 +228,4 @@ Example result on this collection (one run):
 - FST term suggestions are meant as dictionary capability demo and do not directly optimize ranking quality metrics.
 - Phrase and proximity retrieval depend on positional index file (`<index_name>.pos`), so indexing must be run first.
 - BM25, BM25-WAND, and Adaptive can produce identical effectiveness scores because they use the same BM25 scoring function; differences are mostly in runtime behavior.
+- On PowerShell, boolean phrase queries with inner quotes are safest with `python --% ...`.
