@@ -57,8 +57,20 @@ Why impact may look small in this project:
 - The collection is relatively small, so speed/memory differences vs simple dictionary are limited.
 - FST mostly improves dictionary organization and prefix-query capability, not ranking metric values (RBP/DCG/NDCG/AP).
 
+### Positional Index + Phrase/Proximity Retrieval
+- Added positional index persistence as `<index_name>.pos`.
+- Positional index is built after BSBI/SPIMI indexing and stores:
+  - `term_id -> {doc_id -> [positions]}`
+- Added exact phrase retrieval (`--scoring phrase`).
+- Added proximity retrieval (`--scoring proximity` + `--proximity-distance`).
+
+### Query Spell Correction
+- Added spelling suggestion and query auto-correction based on FST candidates + Levenshtein edit distance.
+- In search CLI, enable via `--spell-correct`.
+- Useful when query terms are misspelled (e.g., `pregnacy -> pregnancy`).
+
 ## Project Structure
-- `bsbi.py`: indexing orchestration + retrieval methods (TF-IDF, BM25, BM25-WAND, Adaptive)
+- `bsbi.py`: indexing orchestration + retrieval methods (TF-IDF, BM25, BM25-WAND, Adaptive, Phrase, Proximity)
 - `index.py`: inverted index reader/writer and metadata storage
 - `compression.py`: postings compression classes (Standard, VBE, Rice)
 - `evaluation.py`: retrieval effectiveness evaluation
@@ -112,6 +124,21 @@ python search.py --encoding rice --scoring adaptive --k 10 --query "lipid metabo
 Prefix suggestions from FST:
 ```bash
 python search.py --encoding rice --suggest-prefix lip --suggest-limit 10 --query "lipid metabolism in pregnancy"
+```
+
+Exact phrase retrieval:
+```bash
+python search.py --encoding rice --scoring phrase --k 10 --query "lipid metabolism"
+```
+
+Proximity retrieval:
+```bash
+python search.py --encoding rice --scoring proximity --proximity-distance 3 --k 10 --query "lipid pregnancy"
+```
+
+Spell-corrected search:
+```bash
+python search.py --encoding rice --scoring bm25 --spell-correct --max-edit-distance 2 --k 10 --query "lipd metabolism in pregnacy"
 ```
 
 ### 3) Run Evaluation
@@ -180,4 +207,5 @@ Example result on this collection (one run):
 - `spimi.py` writes to `index` by default (same as `bsbi.py`), so running one indexer after another will overwrite index files.
 - The retrieval/evaluation `--encoding` must match the encoding used when building index files.
 - FST term suggestions are meant as dictionary capability demo and do not directly optimize ranking quality metrics.
+- Phrase and proximity retrieval depend on positional index file (`<index_name>.pos`), so indexing must be run first.
 - BM25, BM25-WAND, and Adaptive can produce identical effectiveness scores because they use the same BM25 scoring function; differences are mostly in runtime behavior.
