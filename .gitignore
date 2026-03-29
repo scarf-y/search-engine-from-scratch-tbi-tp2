@@ -1,7 +1,9 @@
-index/*.index
-index/*.dict
-index/*.fst
-index/*.pos
+index/*
+!index/.gitkeep
+
 tmp/*
+!tmp/.gitkeep
+
 __pycache__/
+**/__pycache__/
 *.pyc
