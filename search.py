@@ -41,6 +41,12 @@ def build_arg_parser():
     parser.add_argument("--proximity-distance", type=int, default=3, help="Max distance for proximity retrieval")
     parser.add_argument("--spell-correct", action="store_true", help="Enable query spell correction")
     parser.add_argument("--max-edit-distance", type=int, default=2, help="Max edit distance for spell correction")
+    parser.add_argument("--with-snippet", action="store_true", help="Show result snippets with query-term highlights")
+    parser.add_argument("--snippet-window", type=int, default=8, help="Context window size for snippets")
+    parser.add_argument("--snippet-max-chars", type=int, default=220, help="Maximum snippet length in characters")
+    parser.add_argument("--prf", action="store_true", help="Enable pseudo relevance feedback query expansion")
+    parser.add_argument("--prf-docs", type=int, default=5, help="Top docs used for PRF expansion")
+    parser.add_argument("--expand-terms", type=int, default=3, help="Number of expansion terms for PRF")
     parser.add_argument("--suggest-prefix", help="Prefix for FST term suggestions")
     parser.add_argument("--suggest-limit", type=int, default=10, help="Maximum suggestion count")
     parser.add_argument(
@@ -80,6 +86,21 @@ def run_search(args):
                     print(f"  {original} -> {suggested}")
             query_to_use = corrected_query
 
+        if args.prf:
+            prf_scoring = args.scoring if args.scoring in ("tfidf", "bm25", "bm25_wand", "adaptive") else "bm25"
+            expanded_query, added_terms = bsbi.expand_query_prf(
+                query_to_use,
+                top_docs=args.prf_docs,
+                expand_terms=args.expand_terms,
+                scoring=prf_scoring,
+                k1=args.k1,
+                b=args.b
+            )
+            if added_terms:
+                print(f"PRF expanded query: {expanded_query}")
+                print(f"  added terms: {', '.join(added_terms)}")
+            query_to_use = expanded_query
+
         print("Query  : ", query)
         print("Results:")
         if args.scoring == "tfidf":
@@ -114,6 +135,15 @@ def run_search(args):
 
         for (score, doc) in results:
             print(f"{doc:30} {score:>.3f}")
+            if args.with_snippet:
+                snippet = bsbi.build_snippet(
+                    doc,
+                    query_to_use,
+                    window=args.snippet_window,
+                    max_chars=args.snippet_max_chars
+                )
+                if snippet:
+                    print(f"  {snippet}")
         print()
 
 

@@ -939,6 +939,145 @@ class BSBIIndex:
             self._load_term_fst()
         return [term for (term, _) in self.term_fst.prefix_search(prefix, limit=limit)]
 
+    @staticmethod
+    def _normalize_for_match(token):
+        cleaned = re.sub(r"[^A-Za-z0-9]+", "", token).lower()
+        return cleaned
+
+    def build_snippet(self, doc_path, query, window=8, max_chars=220):
+        """
+        Bangun snippet sederhana dari dokumen dengan highlight term query.
+        """
+        try:
+            with open(doc_path, "r", encoding="utf8", errors="surrogateescape") as f:
+                tokens = f.read().split()
+        except FileNotFoundError:
+            return ""
+
+        if not tokens:
+            return ""
+
+        query_terms = {
+            self._normalize_for_match(tok)
+            for tok in query.split()
+            if self._normalize_for_match(tok)
+        }
+        if not query_terms:
+            text = " ".join(tokens)
+            return text[:max_chars] + ("..." if len(text) > max_chars else "")
+
+        hit_idx = None
+        for i, tok in enumerate(tokens):
+            if self._normalize_for_match(tok) in query_terms:
+                hit_idx = i
+                break
+        if hit_idx is None:
+            text = " ".join(tokens)
+            return text[:max_chars] + ("..." if len(text) > max_chars else "")
+
+        start = max(0, hit_idx - window)
+        end = min(len(tokens), hit_idx + window + 1)
+        snippet_tokens = tokens[start:end]
+
+        rendered = []
+        for tok in snippet_tokens:
+            if self._normalize_for_match(tok) in query_terms:
+                rendered.append(f"[[{tok}]]")
+            else:
+                rendered.append(tok)
+
+        snippet = " ".join(rendered)
+        if start > 0:
+            snippet = "... " + snippet
+        if end < len(tokens):
+            snippet = snippet + " ..."
+
+        if len(snippet) > max_chars:
+            snippet = snippet[:max_chars].rstrip() + "..."
+        return snippet
+
+    def expand_query_prf(self, query, top_docs=5, expand_terms=3, scoring="bm25", k1=1.2, b=0.75):
+        """
+        Pseudo relevance feedback (PRF) sederhana:
+        1) Ambil top docs dari query awal.
+        2) Pilih term kandidat ber-IDF relatif tinggi dari dokumen tersebut.
+        3) Tambahkan N term terbaik ke query.
+        """
+        if top_docs <= 0 or expand_terms <= 0:
+            return query, []
+        if len(self.term_id_map) == 0 or len(self.doc_id_map) == 0:
+            self.load()
+        if self.term_fst is None:
+            self._load_term_fst()
+
+        if scoring == "tfidf":
+            initial_results = self.retrieve_tfidf(query, k=top_docs)
+        elif scoring == "bm25_wand":
+            initial_results = self.retrieve_bm25_wand(query, k=top_docs, k1=k1, b=b)
+        elif scoring == "adaptive":
+            initial_results = self.retrieve_adaptive(query, k=top_docs, k1=k1, b=b)
+        else:
+            initial_results = self.retrieve_bm25(query, k=top_docs, k1=k1, b=b)
+
+        if not initial_results:
+            return query, []
+
+        base_terms = [tok for tok in query.split() if tok]
+        base_term_set = set(base_terms)
+        candidate_tf = {}
+
+        for _, doc_path in initial_results:
+            try:
+                with open(doc_path, "r", encoding="utf8", errors="surrogateescape") as f:
+                    for token in f.read().split():
+                        # gunakan token yang ada di vocabulary FST dan cenderung term "kata"
+                        if not token or not token.isalpha():
+                            continue
+                        if self.term_fst.lookup(token) is None:
+                            continue
+                        if token in base_term_set:
+                            continue
+                        candidate_tf[token] = candidate_tf.get(token, 0) + 1
+            except FileNotFoundError:
+                continue
+
+        if not candidate_tf:
+            return query, []
+
+        with InvertedIndexReader(self.index_name, self.postings_encoding, directory=self.output_dir) as merged_index:
+            N = len(merged_index.doc_length)
+            if N == 0:
+                return query, []
+
+            scored_candidates = []
+            for term, tf in candidate_tf.items():
+                term_id = self.term_fst.lookup(term)
+                if term_id is None or term_id not in merged_index.postings_dict:
+                    continue
+                df = merged_index.postings_dict[term_id][1]
+                if df <= 0:
+                    continue
+                idf = math.log(N / df)
+                score = tf * idf
+                scored_candidates.append((score, term))
+
+        if not scored_candidates:
+            return query, []
+
+        scored_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        selected_terms = []
+        for _, term in scored_candidates:
+            if term not in base_term_set:
+                selected_terms.append(term)
+            if len(selected_terms) >= expand_terms:
+                break
+
+        if not selected_terms:
+            return query, []
+
+        expanded_query = query + " " + " ".join(selected_terms)
+        return expanded_query, selected_terms
+
     def index(self):
         """
         Base indexing code
