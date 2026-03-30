@@ -1,261 +1,158 @@
 # TP2 - Search Engine from Scratch (TBI)
 
+## Author
+- Name: Daffa Naufal Rahadian
+- NPM: 2306213003
+
 ## Overview
-This project implements a simple search engine pipeline using BSBI indexing and inverted index retrieval.
-The codebase was extended to complete the main TP2 requirements.
+This project is an end-to-end search engine implementation for TP2, including indexing, compression, ranked retrieval, boolean/phrase/proximity retrieval, evaluation metrics, and several bonus features.
 
-## What Has Been Added
-### 1) New Bit-Level Compression: Rice Coding
-- Added `RicePostings` in `compression.py`.
-- Supports:
-  - `encode` / `decode` for gap-based postings lists
-  - `encode_tf` / `decode_tf` for term frequency lists
+## Main Requirements Implemented
+1. Bit-level compression
+- Added Rice coding (`RicePostings`) in `compression.py` for postings and TF list encoding/decoding.
 
-### 2) BM25 Scoring
-- Added BM25 retrieval in `bsbi.py` via `retrieve_bm25(...)`.
-- Uses document length normalization:
-  - `dl` from `doc_length`
-  - `avdl` (`avg_doc_length`) precomputed and stored in index metadata
+2. BM25 scoring
+- Added BM25 retrieval with document-length normalization.
+- Index metadata stores `doc_length` and `avg_doc_length` for BM25.
 
-### 3) Additional Evaluation Metrics
-- Extended `evaluation.py` with:
-  - `DCG`
-  - `NDCG`
-  - `AP` (Average Precision)
-- Existing `RBP` metric is still available.
+3. Evaluation metrics
+- Added `DCG`, `NDCG`, and `AP` in `evaluation.py`.
+- Existing `RBP` is still available.
 
-### 4) WAND Top-K Retrieval for BM25
-- Added `retrieve_bm25_wand(...)` in `bsbi.py`.
-- Inverted index metadata now stores extra per-term statistic (`max_tf`) to compute upper bounds for WAND pruning.
+4. WAND top-k retrieval
+- Added BM25 + WAND (`retrieve_bm25_wand`) to avoid scoring every candidate document.
 
-### 5) Adaptive Retrieval
-- Added `retrieve_adaptive(...)` in `bsbi.py`.
-- Adaptive strategy selects between:
-  - `BM25`
-  - `BM25 + WAND`
-- Heuristic is based on query length and document frequency profile of query terms.
+## Bonus Features Implemented
+1. SPIMI indexing mode
+- Added separate indexer in `spimi.py`.
+- Output format is compatible with the same `search.py` and `evaluation.py` pipeline.
 
-## Bonus Feature
-### SPIMI Indexing Mode (Separate Module)
-- Added `spimi.py` as a separate SPIMI indexer.
-- SPIMI accumulates in-memory dictionary:
-  - `term_id -> {doc_id: tf}`
-- The dictionary is flushed to intermediate index files every configurable number of documents, then merged into the final index.
-- Output index format is compatible with existing `search.py` and `evaluation.py`.
+2. FST dictionary
+- Added `fst.py` and persisted `terms.fst`.
+- Used for term lookup and prefix suggestions.
 
-### FST-Based Term Dictionary
-- Added `fst.py` as a finite-state transducer dictionary for term storage and lookup.
-- During indexing, term dictionary is also persisted as `terms.fst`.
-- During retrieval, query term lookup uses FST.
-- Added prefix suggestion feature in `search.py` (`--suggest-prefix`).
+3. Adaptive retrieval
+- Added `retrieve_adaptive` to switch between BM25 and BM25+WAND based on query characteristics.
 
-Why this is useful:
-- Adds a structured automaton-based dictionary representation (bonus requirement).
-- Enables efficient prefix traversal for term suggestions.
+4. Positional index + phrase/proximity retrieval
+- Added positional index file (`<index_name>.pos`).
+- Added exact phrase and proximity search modes.
 
-Why impact may look small in this project:
-- The collection is relatively small, so speed/memory differences vs simple dictionary are limited.
-- FST mostly improves dictionary organization and prefix-query capability, not ranking metric values (RBP/DCG/NDCG/AP).
+5. Query spell correction
+- Added Levenshtein-based query correction using FST candidate terms.
 
-### Positional Index + Phrase/Proximity Retrieval
-- Added positional index persistence as `<index_name>.pos`.
-- Positional index is built after BSBI/SPIMI indexing and stores:
-  - `term_id -> {doc_id -> [positions]}`
-- Added exact phrase retrieval (`--scoring phrase`).
-- Added proximity retrieval (`--scoring proximity` + `--proximity-distance`).
+6. Boolean query parser
+- Supports `AND`, `OR`, `NOT`, parenthesis, and phrase clauses.
 
-### Query Spell Correction
-- Added spelling suggestion and query auto-correction based on FST candidates + Levenshtein edit distance.
-- In search CLI, enable via `--spell-correct`.
-- Useful when query terms are misspelled (e.g., `pregnacy -> pregnancy`).
+7. Snippets and pseudo relevance feedback (PRF)
+- Optional snippet rendering with highlight.
+- Optional PRF query expansion.
 
-### Boolean Query Parser
-- Added boolean retrieval mode with support for:
-  - `AND`, `OR`, `NOT`
-  - parenthesis: `( ... )`
-  - phrase clause: `"..."` (e.g., `"lipid metabolism" AND pregnancy`)
-- Added scoring backend choice for ranking matched boolean documents:
-  - `--boolean-base bm25` (default)
-  - `--boolean-base tfidf`
+## Text Preprocessing (Now Applied)
+Normalization is applied consistently in BSBI and SPIMI indexing and retrieval query processing:
+- Lowercasing
+- Regex tokenization
+- Stopword removal (English stopword list)
+- Simple suffix-based stemming
 
-### Result Snippet + Highlighting
-- Added optional result snippet rendering in search output.
-- Snippet shows local context around matched terms and highlights them using `[[term]]`.
-- CLI options:
-  - `--with-snippet`
-  - `--snippet-window`
-  - `--snippet-max-chars`
-
-### Pseudo Relevance Feedback (Query Expansion)
-- Added lightweight PRF query expansion:
-  1. retrieve top documents from the initial query
-  2. collect candidate expansion terms from those documents
-  3. rank candidates using TF × IDF
-  4. append top terms to query and run retrieval
-- CLI options:
-  - `--prf`
-  - `--prf-docs`
-  - `--expand-terms`
+This normalization is used in:
+- Index building (`bsbi.py`, `spimi.py`)
+- Query term lookup for retrieval
+- Boolean term extraction/scoring terms
+- Spell correction input normalization
+- Snippet query-term matching
+- PRF term collection and expansion
 
 ## Project Structure
-- `bsbi.py`: indexing orchestration + retrieval methods (TF-IDF, BM25, BM25-WAND, Adaptive, Phrase, Proximity, Boolean)
-- `index.py`: inverted index reader/writer and metadata storage
-- `compression.py`: postings compression classes (Standard, VBE, Rice)
-- `evaluation.py`: retrieval effectiveness evaluation
-- `fst.py`: finite-state transducer dictionary for terms (bonus)
-- `spimi.py`: separate SPIMI indexing module (bonus)
-- `search.py`: sample search script
-- `collection/`: document collection
-- `queries.txt`, `qrels.txt`: evaluation inputs
+- `bsbi.py`: BSBI indexing and retrieval methods
+- `spimi.py`: SPIMI indexing mode
+- `compression.py`: Standard, VBE, Rice postings compression
+- `index.py`: inverted index reader/writer + metadata
+- `fst.py`: FST dictionary implementation
+- `search.py`: CLI for retrieval and search features
+- `evaluation.py`: evaluation pipeline and metrics
+- `collection/`, `queries.txt`, `qrels.txt`: dataset and evaluation inputs
 
-## Requirements
-- Python 3.x
-- `tqdm`
-
-Install dependency:
+## Installation
 ```bash
 pip install tqdm
 ```
 
-## How To Run
-### 1) Build Index
+## Usage
+### 1) Build index (BSBI)
 ```bash
-python bsbi.py
+python bsbi.py --encoding vbe --output-dir index --index-name main_index
 ```
 
-Build index with specific compression:
+### 2) Build index (SPIMI)
 ```bash
-python bsbi.py --encoding rice
+python spimi.py --encoding vbe --output-dir index --index-name main_index --docs-per-chunk 100
 ```
 
-Build index using SPIMI (bonus):
+### 3) Search examples
+BM25:
 ```bash
-python spimi.py --encoding rice --docs-per-chunk 100
+python search.py --encoding vbe --output-dir index --index-name main_index --scoring bm25 --query "lipid metabolism in toxemia and normal pregnancy" --k 10
 ```
 
-### 2) Run Search
-Default search (sample queries, TF-IDF):
+BM25 + WAND:
 ```bash
-python search.py
+python search.py --encoding vbe --output-dir index --index-name main_index --scoring bm25_wand --query "lipid metabolism in toxemia and normal pregnancy" --k 10
 ```
 
-Search with custom mode:
+Adaptive:
 ```bash
-python search.py --encoding rice --scoring bm25_wand --k 10 --query "lipid metabolism in pregnancy"
+python search.py --encoding vbe --output-dir index --index-name main_index --scoring adaptive --query "lipid metabolism in toxemia and normal pregnancy" --k 10
 ```
 
-Adaptive retrieval mode:
+Phrase:
 ```bash
-python search.py --encoding rice --scoring adaptive --k 10 --query "lipid metabolism in pregnancy"
+python search.py --encoding vbe --output-dir index --index-name main_index --scoring phrase --query "lipid metabolism" --k 10
 ```
 
-Prefix suggestions from FST:
+Proximity:
 ```bash
-python search.py --encoding rice --suggest-prefix lip --suggest-limit 10 --query "lipid metabolism in pregnancy"
+python search.py --encoding vbe --output-dir index --index-name main_index --scoring proximity --proximity-distance 3 --query "lipid pregnancy" --k 10
 ```
 
-Exact phrase retrieval:
+Boolean (PowerShell-safe):
 ```bash
-python search.py --encoding rice --scoring phrase --k 10 --query "lipid metabolism"
+python --% search.py --encoding vbe --output-dir index --index-name main_index --scoring boolean --boolean-base bm25 --query "\"lipid metabolism\" AND pregnancy" --k 10
 ```
 
-Proximity retrieval:
+With spell correction:
 ```bash
-python search.py --encoding rice --scoring proximity --proximity-distance 3 --k 10 --query "lipid pregnancy"
+python search.py --encoding vbe --output-dir index --index-name main_index --scoring bm25 --spell-correct --query "lipiid metabolisim pregnncy" --k 10
 ```
 
-Spell-corrected search:
+With snippets:
 ```bash
-python search.py --encoding rice --scoring bm25 --spell-correct --max-edit-distance 2 --k 10 --query "lipd metabolism in pregnacy"
+python search.py --encoding vbe --output-dir index --index-name main_index --scoring bm25 --with-snippet --query "lipid metabolism pregnancy" --k 5
 ```
 
-Search with snippets:
+With PRF:
 ```bash
-python search.py --encoding rice --scoring bm25 --with-snippet --snippet-window 6 --snippet-max-chars 180 --k 10 --query "lipid metabolism in pregnancy"
+python search.py --encoding vbe --output-dir index --index-name main_index --scoring bm25 --prf --prf-docs 5 --expand-terms 3 --query "lipid metabolism pregnancy" --k 10
 ```
 
-Search with PRF query expansion:
+FST prefix suggestion:
 ```bash
-python search.py --encoding rice --scoring adaptive --prf --prf-docs 5 --expand-terms 3 --k 10 --query "lipid metabolism in pregnancy"
+python search.py --encoding vbe --output-dir index --index-name main_index --suggest-prefix met --suggest-limit 10 --query "lipid" --k 1
 ```
 
-Boolean retrieval:
+### 4) Evaluation
 ```bash
-python search.py --encoding rice --scoring boolean --boolean-base bm25 --k 10 --query "(lipid OR pregnancy) AND NOT toxemia"
+python evaluation.py --encoding vbe --output-dir index --index-name main_index --scoring bm25 --k 1000
 ```
 
-Boolean retrieval with phrase clause:
-```bash
-python --% search.py --encoding rice --scoring boolean --boolean-base bm25 --k 10 --query "\"lipid metabolism\" AND pregnancy"
-```
-
-### 3) Run Evaluation
-Default evaluation (TF-IDF):
-```bash
-python evaluation.py
-```
-
-Evaluation with custom mode:
-```bash
-python evaluation.py --encoding rice --scoring bm25_wand --k 1000
-```
-
-Adaptive evaluation:
-```bash
-python evaluation.py --encoding rice --scoring adaptive --k 1000
-```
-
-## BM25 / WAND Usage Example
-```python
-from bsbi import BSBIIndex
-from compression import VBEPostings
-
-bsbi = BSBIIndex(data_dir="collection", output_dir="index", postings_encoding=VBEPostings)
-
-print(bsbi.retrieve_bm25("lipid metabolism in pregnancy", k=10))
-print(bsbi.retrieve_bm25_wand("lipid metabolism in pregnancy", k=10))
-print(bsbi.retrieve_adaptive("lipid metabolism in pregnancy", k=10))
-```
-
-## Runtime Benchmark Snippet
-```python
-import time
-from bsbi import BSBIIndex
-from compression import VBEPostings
-
-bsbi = BSBIIndex(data_dir="collection", output_dir="index", postings_encoding=VBEPostings)
-
-queries = []
-with open("queries.txt", encoding="utf8") as f:
-    for line in f:
-        parts = line.strip().split()
-        if parts:
-            queries.append(" ".join(parts[1:]))
-
-def bench(name, fn):
-    t0 = time.perf_counter()
-    for q in queries:
-        fn(q)
-    dt = time.perf_counter() - t0
-    print(f"{name}: total={dt:.6f}s avg={dt/len(queries):.6f}s")
-
-k = 200
-bench("BM25", lambda q: bsbi.retrieve_bm25(q, k=k))
-bench("BM25_WAND", lambda q: bsbi.retrieve_bm25_wand(q, k=k))
-bench("ADAPTIVE", lambda q: bsbi.retrieve_adaptive(q, k=k))
-```
-
-Example result on this collection (one run):
-- `BM25: total=0.556743s avg=0.018558s`
-- `BM25_WAND: total=0.687092s avg=0.022903s`
-- `ADAPTIVE: total=1.033690s avg=0.034456s`
+Other available scoring values:
+- `tfidf`
+- `bm25`
+- `bm25_wand`
+- `adaptive`
 
 ## Notes
-- Re-run indexing (`python bsbi.py`) after metadata schema changes to ensure all statistics are persisted.
-- `spimi.py` writes to `index` by default (same as `bsbi.py`), so running one indexer after another will overwrite index files.
-- The retrieval/evaluation `--encoding` must match the encoding used when building index files.
-- FST term suggestions are meant as dictionary capability demo and do not directly optimize ranking quality metrics.
-- Phrase and proximity retrieval depend on positional index file (`<index_name>.pos`), so indexing must be run first.
-- PRF can change ranking behavior (sometimes improves, sometimes drifts), so it is optional and should be compared against baseline retrieval.
-- BM25, BM25-WAND, and Adaptive can produce identical effectiveness scores because they use the same BM25 scoring function; differences are mostly in runtime behavior.
-- On PowerShell, boolean phrase queries with inner quotes are safest with `python --% ...`.
+- Re-run indexing after major indexing/preprocessing changes.
+- Retrieval/evaluation `--encoding` must match index build encoding.
+- `bsbi.py` and `spimi.py` both write to the same output directory by default; running one after another overwrites index files.
+- BM25, BM25_WAND, and Adaptive can have very similar effectiveness metrics because they share BM25 scoring; differences are mainly runtime behavior.
