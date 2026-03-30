@@ -32,6 +32,18 @@ class BSBIIndex:
                     VBEPostings, dsb.
     index_name(str): Nama dari file yang berisi inverted index
     """
+    STOPWORDS = {
+        "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by",
+        "for", "from", "had", "has", "have", "he", "her", "hers", "him", "his",
+        "i", "if", "in", "into", "is", "it", "its", "itself", "me", "mine", "my",
+        "of", "on", "or", "our", "ours", "ourselves", "she", "so", "that", "the",
+        "their", "theirs", "them", "themselves", "then", "there", "these", "they",
+        "this", "those", "to", "too", "us", "was", "we", "were", "what", "when",
+        "where", "which", "who", "whom", "why", "will", "with", "you", "your",
+        "yours", "yourself", "yourselves"
+    }
+    TOKEN_PATTERN = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+")
+
     def __init__(self, data_dir, output_dir, postings_encoding, index_name = "main_index"):
         self.term_id_map = IdMap()
         self.doc_id_map = IdMap()
@@ -46,6 +58,89 @@ class BSBIIndex:
 
         # Untuk menyimpan nama-nama file dari semua intermediate inverted index
         self.intermediate_indices = []
+
+    @staticmethod
+    def _simple_stem(token):
+        """
+        Stemmer ringan berbasis aturan suffix (Porter-like, simplified).
+        """
+        if len(token) <= 2:
+            return token
+
+        # Step 1a (plural)
+        if token.endswith("sses"):
+            token = token[:-2]
+        elif token.endswith("ies") and len(token) > 4:
+            token = token[:-3] + "i"
+        elif token.endswith("ss"):
+            pass
+        elif token.endswith("s") and len(token) > 3:
+            token = token[:-1]
+
+        # Step 1b/1c (common verb endings)
+        for suf in ("ingly", "edly", "ing", "ed", "ly"):
+            if token.endswith(suf) and len(token) > len(suf) + 2:
+                token = token[:-len(suf)]
+                break
+
+        # Step 2 (common nominal/adjectival suffixes)
+        suffix_map = [
+            ("ization", "ize"),
+            ("ational", "ate"),
+            ("fulness", "ful"),
+            ("ousness", "ous"),
+            ("iveness", "ive"),
+            ("tional", "tion"),
+            ("biliti", "ble"),
+            ("icate", "ic"),
+            ("ative", ""),
+            ("alize", "al"),
+            ("ness", ""),
+            ("ment", ""),
+            ("tion", "t"),
+            ("sion", "s"),
+            ("able", ""),
+            ("ible", ""),
+            ("izer", "ize"),
+            ("ance", ""),
+            ("ence", ""),
+            ("ship", ""),
+            ("ally", "al"),
+            ("ical", "ic"),
+            ("ous", ""),
+            ("ive", ""),
+            ("est", ""),
+            ("er", "")
+        ]
+        for suf, rep in suffix_map:
+            if token.endswith(suf) and len(token) > len(suf) + 2:
+                token = token[:-len(suf)] + rep
+                break
+
+        if token.endswith("i") and len(token) > 3:
+            token = token[:-1] + "y"
+        return token
+
+    def _normalize_token(self, token, remove_stopwords=True):
+        token = token.lower().strip("'")
+        token = re.sub(r"[^a-z0-9']", "", token)
+        if not token:
+            return None
+        if remove_stopwords and token in self.STOPWORDS:
+            return None
+        if not token.isdigit():
+            token = self._simple_stem(token)
+        if remove_stopwords and token in self.STOPWORDS:
+            return None
+        return token
+
+    def _process_text(self, text, remove_stopwords=True):
+        normalized = []
+        for raw_token in self.TOKEN_PATTERN.findall(text):
+            token = self._normalize_token(raw_token, remove_stopwords=remove_stopwords)
+            if token:
+                normalized.append(token)
+        return normalized
 
     def _build_term_fst(self):
         self.term_fst = FSTDictionary.from_id_to_str(self.term_id_map.id_to_str)
@@ -99,7 +194,8 @@ class BSBIIndex:
                 docname = block_dir + "/" + filename
                 doc_id = self.doc_id_map[docname]
                 with open(docname, "r", encoding="utf8", errors="surrogateescape") as f:
-                    for pos, token in enumerate(f.read().split()):
+                    normalized_tokens = self._process_text(f.read(), remove_stopwords=True)
+                    for pos, token in enumerate(normalized_tokens):
                         term_id = self.term_id_map.str_to_id.get(token)
                         if term_id is None:
                             continue
@@ -168,7 +264,7 @@ class BSBIIndex:
         for filename in next(os.walk(dir))[2]:
             docname = dir + "/" + filename
             with open(docname, "r", encoding = "utf8", errors = "surrogateescape") as f:
-                for token in f.read().split():
+                for token in self._process_text(f.read(), remove_stopwords=True):
                     td_pairs.append((self.term_id_map[token], self.doc_id_map[docname]))
 
         return td_pairs
@@ -723,7 +819,11 @@ class BSBIIndex:
                     doc_ids.add(doc_id)
             return doc_ids
 
-        term_id = self.term_fst.lookup(clause) if self.term_fst else None
+        normalized_clause = self._normalize_token(clause, remove_stopwords=True)
+        if not normalized_clause:
+            return set()
+
+        term_id = self.term_fst.lookup(normalized_clause) if self.term_fst else None
         if term_id is None or term_id not in merged_index.postings_dict:
             return set()
 
@@ -731,21 +831,22 @@ class BSBIIndex:
         self._ensure_postings_tf_alignment(term_id, postings, tf_list, self.postings_encoding)
         return set(postings)
 
-    @staticmethod
-    def _extract_terms_for_scoring(boolean_query):
+    def _extract_terms_for_scoring(self, boolean_query):
         """
         Ambil token term dari boolean query untuk scoring backend (BM25/TF-IDF).
         Operator boolean dan parenthesis diabaikan.
         """
-        tokens = BSBIIndex._tokenize_boolean_query(boolean_query)
+        tokens = self._tokenize_boolean_query(boolean_query)
         terms = []
         for token in tokens:
             if token in ("AND", "OR", "NOT", "(", ")"):
                 continue
             if token.startswith('"') and token.endswith('"') and len(token) >= 2:
-                terms.extend(token[1:-1].split())
+                terms.extend(self._process_text(token[1:-1], remove_stopwords=True))
             else:
-                terms.append(token)
+                normalized = self._normalize_token(token, remove_stopwords=True)
+                if normalized:
+                    terms.append(normalized)
         return terms
 
     def retrieve_boolean(self, boolean_query, k = 10, base_scoring = "bm25", k1 = 1.2, b = 0.75):
@@ -828,7 +929,7 @@ class BSBIIndex:
             self._load_term_fst()
 
         term_ids = []
-        for word in query.split():
+        for word in self._process_text(query, remove_stopwords=True):
             term_id = self.term_fst.lookup(word)
             if term_id is not None:
                 term_ids.append(term_id)
@@ -865,6 +966,10 @@ class BSBIIndex:
             self.load()
         if self.term_fst is None:
             self._load_term_fst()
+
+        term = self._normalize_token(term, remove_stopwords=False)
+        if not term:
+            return []
 
         if self.term_fst.contains(term):
             return [term]
@@ -911,7 +1016,7 @@ class BSBIIndex:
 
         corrected_tokens = []
         corrections = []
-        for token in query.split():
+        for token in self._process_text(query, remove_stopwords=True):
             if self.term_fst.contains(token):
                 corrected_tokens.append(token)
                 continue
@@ -937,12 +1042,14 @@ class BSBIIndex:
             self.load()
         if self.term_fst is None:
             self._load_term_fst()
-        return [term for (term, _) in self.term_fst.prefix_search(prefix, limit=limit)]
+        cleaned_prefix = re.sub(r"[^A-Za-z0-9]+", "", prefix).lower()
+        if not cleaned_prefix:
+            return []
+        return [term for (term, _) in self.term_fst.prefix_search(cleaned_prefix, limit=limit)]
 
-    @staticmethod
-    def _normalize_for_match(token):
-        cleaned = re.sub(r"[^A-Za-z0-9]+", "", token).lower()
-        return cleaned
+    def _normalize_for_match(self, token):
+        normalized = self._normalize_token(token, remove_stopwords=False)
+        return normalized if normalized else ""
 
     def build_snippet(self, doc_path, query, window=8, max_chars=220):
         """
@@ -957,11 +1064,7 @@ class BSBIIndex:
         if not tokens:
             return ""
 
-        query_terms = {
-            self._normalize_for_match(tok)
-            for tok in query.split()
-            if self._normalize_for_match(tok)
-        }
+        query_terms = set(self._process_text(query, remove_stopwords=True))
         if not query_terms:
             text = " ".join(tokens)
             return text[:max_chars] + ("..." if len(text) > max_chars else "")
@@ -1022,17 +1125,14 @@ class BSBIIndex:
         if not initial_results:
             return query, []
 
-        base_terms = [tok for tok in query.split() if tok]
+        base_terms = self._process_text(query, remove_stopwords=True)
         base_term_set = set(base_terms)
         candidate_tf = {}
 
         for _, doc_path in initial_results:
             try:
                 with open(doc_path, "r", encoding="utf8", errors="surrogateescape") as f:
-                    for token in f.read().split():
-                        # gunakan token yang ada di vocabulary FST dan cenderung term "kata"
-                        if not token or not token.isalpha():
-                            continue
+                    for token in self._process_text(f.read(), remove_stopwords=True):
                         if self.term_fst.lookup(token) is None:
                             continue
                         if token in base_term_set:
@@ -1088,6 +1188,8 @@ class BSBIIndex:
         untuk parsing dokumen dan memanggil invert_write yang melakukan inversion
         di setiap block dan menyimpannya ke index yang baru.
         """
+        os.makedirs(self.output_dir, exist_ok=True)
+
         # loop untuk setiap sub-directory di dalam folder collection (setiap block)
         for block_dir_relative in tqdm(sorted(next(os.walk(self.data_dir))[1])):
             td_pairs = self.parse_block(block_dir_relative)

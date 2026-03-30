@@ -56,7 +56,7 @@ class SPIMIIndex(BSBIIndex):
         for docname in tqdm(document_paths, desc="SPIMI indexing"):
             doc_id = self.doc_id_map[docname]
             with open(docname, "r", encoding="utf8", errors="surrogateescape") as f:
-                for token in f.read().split():
+                for token in self._process_text(f.read(), remove_stopwords=True):
                     term_id = self.term_id_map[token]
                     if term_id not in term_tf_dict:
                         term_tf_dict[term_id] = {}
